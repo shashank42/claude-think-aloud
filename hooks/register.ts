@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import { boardText, defaultCast, mergeCast, ROLES, roleOf, StepReader, Team, TEAM, WORKERS, type Line, type Role, type TeamSettings, type Utterance } from './cast'
-import { fallbackNarration, narrationOf, narratorPrompt } from './speech'
+import { fallbackNarration, narrationOf, narratorPrompt, speakableOf, speakablePrompt } from './speech'
 
 /**
  * think-aloud: Claude's thinking and replies, spoken as they stream by a small fixed team of voices (docs/cast.md),
@@ -69,6 +69,8 @@ const KOKORO_VOICE = /^[a-z]{2}_[a-z]+$/i
 /** The director's and the narrator's limits: past them their answer is not waited for. */
 const DIRECTOR_TIMEOUT_MS = 3000
 const NARRATOR_TIMEOUT_MS = 4000
+/** The speech editor's limit: past it the line is said as written. */
+const SPEAKABLE_TIMEOUT_MS = 2500
 /** Tables and code blocks narrated ahead of being said, at most: a reply of twelve snippets made twelve calls at once. */
 const NARRATE_AHEAD = 2
 /**
@@ -285,6 +287,20 @@ async function narrate($: EngineInterface, line: Line): Promise<string> {
   }
 }
 
+/**
+ * An utterance as it should sound (Haiku, speakablePrompt): "22 Nov" said as 22 November, "5–9 s" as 5 to 9 seconds.
+ * With the narrator off, or when Haiku is slow or fails, the words as written. Never throws.
+ */
+async function speakable($: EngineInterface, text: string): Promise<string> {
+  if (!S.settings.narrator || !/[\p{L}\p{N}]/u.test(text)) return text
+  try {
+    const r = await $.model.complete({ model: 'haiku', effort: 'low', maxTokens: 400, timeoutMs: SPEAKABLE_TIMEOUT_MS, prompt: speakablePrompt(text) })
+    return (r.isAnswered && speakableOf(r.text, text)) || text
+  } catch {
+    return text
+  }
+}
+
 /** Asks the director who speaks now, in the background; its answer stands from the next block on. Never throws. */
 async function direct($: EngineInterface, why: 'prompt' | 'step'): Promise<void> {
   try {
@@ -363,6 +379,9 @@ async function work($: EngineInterface): Promise<void> {
       const kokoro = S.settings.engine === 'kokoro' && S.kokoro.port !== null
       const u = team.next(kokoro ? KOKORO_UTTERANCE_MAX : UTTERANCE_MAX)
       if (!u) break
+      // Said for the ear (Haiku), while the utterance before it still plays; skipped meanwhile, it is not said.
+      u.text = await speakable($, u.text)
+      if (mine !== S.epoch || (u.section !== undefined && team.isSkipped(u.section))) continue
       const rate = Math.round(u.kind === 'reply' ? S.settings.rate : S.settings.rate * THINKING_FASTER)
       playing = 0
       if (kokoro) {

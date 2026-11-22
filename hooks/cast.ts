@@ -473,6 +473,10 @@ export class Team {
     })
   }
 
+  isSkipped(section: string): boolean {
+    return this.skipped.has(section)
+  }
+
   /** "Next": the section goes, what of it waits and what of it is still to come. */
   skip(section: string): void {
     this.skipped.add(section)
