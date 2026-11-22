@@ -127,11 +127,15 @@ test('a turn, as the team says it: replies by the lead, a thinking block kept wh
   ])
 
   const said = drain(team, b => (b.block === 'table' ? 'All 42 API tests pass.' : ''))
+  // One utterance per section ("next" skips one): a thinking block, an action line, a reply's paragraph or table.
   expect(said).toEqual([
-    'Emma: Emma here, on the backend. Let me read the logs first. The crash is in the signup route. Read the API server logs. The null check is in now. Next I will run the tests to verify it.',
+    'Emma: Emma here, on the backend. Let me read the logs first. The crash is in the signup route.',
+    'Emma: Read the API server logs.',
+    'Emma: The null check is in now. Next I will run the tests to verify it.',
     'Isla: Isla here, on testing. Run the backend tests.',
     'Maya: Maya here. Fixed and verified. The tests:',
-    'Maya: All 42 API tests pass. It is deployed.',
+    'Maya: All 42 API tests pass.',
+    'Maya: It is deployed.',
   ])
   // The status line names who speaks and their task.
   team.line('qa', 'thinking', 'One more check.')
@@ -167,7 +171,20 @@ test('live pace drops actions first, then the oldest thinking, never replies; th
   reader.chunk({ kind: 'tool', index: 1, name: 'Bash' })
   reader.chunk({ kind: 'input', index: 1, json: '{"command":"git push","description":"Push the branch"}' })
   reader.end()
-  expect(drain(team, () => '')).toEqual(['Theo: Pushing the branch now. Push the branch.'])
+  expect(drain(team, () => '')).toEqual(['Theo: Pushing the branch now.', 'Theo: Push the branch.'])
+
+  // "Next" skips the rest of a section: a whole thought (what of it still streams in too), or one reply paragraph.
+  const nx = new Team(settings({ director: false, intros: false, pace: 'all' }))
+  const step = new StepReader('n:0', nx)
+  step.chunk({ kind: 'thinking', index: 0, text: 'First idea here. Second idea here.\n\nThird idea here. ' })
+  const thought = nx.next(300)!
+  expect(thought.text).toBe('First idea here. Second idea here. Third idea here.')
+  nx.skip(thought.section!)
+  step.chunk({ kind: 'thinking', index: 0, text: 'Fourth idea here.' })
+  step.chunk({ kind: 'text', index: 1, text: 'Para one here.\n\nPara two here.\n| a | b |\n|---|---|\n| 1 | 2 |\nAfter the table.' })
+  step.end()
+  nx.skip(nx.queue.find(l => l.text === 'Para two here.')!.section!)
+  expect(drain(nx, () => 'Table said.')).toEqual(['Maya: Para one here.', 'Maya: Table said.', 'Maya: After the table.'])
 
   // An introduction counts only once its utterance plays: one cut before it played is made again (Neon #17).
   const fresh = new Team(settings())
@@ -402,7 +419,7 @@ test('through the hooks: the director puts Sam on it, the narrator says the tabl
     const v = e.argv.indexOf('-v')
     said.push(`${v >= 0 ? e.argv[v + 1] : 'system'}: ${e.input}`)
     if (said.length === 1) await gate
-    if (said.length === 4) done()
+    if (said.length === 5) done()
     return { value: { code: 0, signal: null } }
   })
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
@@ -438,7 +455,8 @@ test('through the hooks: the director puts Sam on it, the narrator says the tabl
     "Daniel: [[slnc 250]] Sam here, on builds. I'll push the fix and deploy it now. [[slnc 200]]",
     'Daniel: [[slnc 250]] Deploy the backend. [[slnc 200]]',
     'Samantha: [[slnc 250]] Maya here. Deployed. Checks: [[slnc 200]]',
-    'Samantha: [[slnc 250]] Both checks pass. All good. [[slnc 200]]',
+    'Samantha: [[slnc 250]] Both checks pass. [[slnc 200]]',
+    'Samantha: [[slnc 250]] All good. [[slnc 200]]',
   ])
   expect(asked).toEqual(['director', 'narrator'])
   expect(statuses).toContain('🔊 Sam · deploying the backend')

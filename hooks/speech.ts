@@ -113,6 +113,13 @@ export function spoken(line: string): string {
 export class Sentences {
   private text = ''
   private pending = ''
+  /** The paragraph being written: a blank line ends one, a table or a code block is one of its own. */
+  private para = 0
+  /** Something of this paragraph is out, or it is a heading (whose paragraph is the one under it). */
+  private paraUsed = false
+  private heading = false
+  /** The paragraph of each part the last push() or end() gave (paragraphs()). */
+  private tags: number[] = []
   /** The last sentence out: the context the narrator gets for a block after it. */
   private last = ''
   /** The table or code block being held, line by line; a code block's opening fence length too. */
@@ -131,8 +138,14 @@ export class Sentences {
     return this.drain(true)
   }
 
+  /** The paragraph number of each part the last push() or end() returned, in order: what "next" skips in a reply. */
+  paragraphs(): number[] {
+    return [...this.tags]
+  }
+
   private drain(final: boolean): Part[] {
     const out: Part[] = []
+    this.tags = []
     let nl = this.text.indexOf('\n')
     while (nl >= 0) {
       this.line(this.text.slice(0, nl), out)
@@ -183,12 +196,38 @@ export class Sentences {
     if (this.held) this.release(out)
     const open = OPEN_FENCE.exec(s)
     if (open) this.hold('code', out, open[2]?.trim().split(/\s/)[0], open[1]?.length)
-    else this.add(spoken(raw), out)
+    else if (!s) {
+      // A blank line ends the paragraph, unless all it has had is its heading.
+      if (this.heading) this.heading = false
+      else this.nextParagraph(out)
+    } else {
+      if (/^#{1,6}\s/.test(s)) {
+        this.nextParagraph(out)
+        this.heading = true
+        this.paraUsed = true
+      } else this.heading = false
+      this.add(spoken(raw), out)
+    }
+  }
+
+  /** What is out of this paragraph stays in it (a short sentence still waiting too), and the next one starts. */
+  private nextParagraph(out: Part[]): void {
+    this.flush(out)
+    if (this.paraUsed) this.para++
+    this.paraUsed = false
+    this.heading = false
+  }
+
+  private emit(part: Part, out: Part[]): void {
+    out.push(part)
+    this.tags.push(this.para)
+    this.paraUsed = true
   }
 
   private hold(block: Block['block'], out: Part[], lang?: string, fence?: number): void {
-    // A short sentence still waiting to be joined goes first: the order heard is the order written.
-    this.flush(out)
+    // A short sentence still waiting to be joined goes first: the order heard is the order written. The block is a
+    // paragraph of its own.
+    this.nextParagraph(out)
     this.held = { block, lines: [], ...(lang ? { lang } : {}), ...(fence ? { fence } : {}) }
   }
 
@@ -203,12 +242,13 @@ export class Sentences {
     }
     const body = held.lines.join('\n').replace(/^\s*\n/, '').trimEnd()
     if (!body.trim()) return
-    out.push(held.lang ? { block: held.block, body, before: this.last, lang: held.lang } : { block: held.block, body, before: this.last })
+    this.emit(held.lang ? { block: held.block, body, before: this.last, lang: held.lang } : { block: held.block, body, before: this.last }, out)
+    this.nextParagraph(out)
   }
 
   private flush(out: Part[]): void {
     if (!this.pending) return
-    out.push(this.pending)
+    this.emit(this.pending, out)
     this.last = this.pending
     this.pending = ''
   }
@@ -231,7 +271,7 @@ export class Sentences {
         this.pending = joined
         continue
       }
-      out.push(joined)
+      this.emit(joined, out)
       this.last = joined
       this.pending = ''
     }

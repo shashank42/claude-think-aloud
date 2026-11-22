@@ -1,4 +1,5 @@
-import type { EngineInterface, Register } from 'claude-code'
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import { boardText, defaultCast, mergeCast, ROLES, roleOf, StepReader, Team, TEAM, WORKERS, type Line, type Role, type TeamSettings, type Utterance } from './cast'
 import { fallbackNarration, narrationOf, narratorPrompt } from './speech'
 
@@ -21,7 +22,9 @@ import { fallbackNarration, narrationOf, narratorPrompt } from './speech'
  *
  * In `live` pace (the default) speech keeps up with the model: when more than BACKLOG_MAX lines wait, the action
  * lines go first, then the oldest thinking (the reply's never). Sending a message, pressing Esc, or `/speak stop`
- * silences it at once. `/speak` shows and changes the settings, kept across sessions.
+ * silences it at once. "Next" (alt+→, the ⏭ above the prompt, or `/speak next`) skips the rest of what is being said:
+ * the whole thought, the reply's paragraph, table or code block, or the action line; what follows plays at once.
+ * `/speak` shows and changes the settings, kept across sessions.
  */
 
 /** What `/speak` changes ($.store, across sessions). */
@@ -84,8 +87,16 @@ const ENGINE_HOME = '"${THINK_ALOUD_HOME:-$HOME/.claude/think-aloud}"'
 const STOP_PREDECESSOR = `p=$(cat ${ENGINE_HOME}/server.$PPID.pid 2>/dev/null) && ps -p "$p" -o command= 2>/dev/null | grep -q server.py && kill "$p"; exit 0`
 const RATE_MIN = 120
 const RATE_MAX = 400
+/**
+ * The keybinding action whose chord presses "next" (keybindings.json, e.g. `"alt+right": "diff:back"` in Chat).
+ * Claude Code has no actions of a plugin's own yet, so this borrows one with no handler at the prompt: the diff
+ * dialog's Back, which only acts while that dialog is open (and the binding lives in Chat, not there).
+ */
+const NEXT_ACTION = 'diff:back'
+/** Whether a line is playing: the ⏭ row above the prompt shows only then. */
+const SPEAKING = atom({ plugin: 'think-aloud', key: 'speaking' } as const, false)
 const USAGE =
-  '/speak on | off | stop | cast | cast <role> <voice> | name <role> <name> | actions on|off | intros on|off | classifier on|off | narrator on|off | thinking on|off | replies on|off | rate 200 | voice thinking|reply <name> | voices | engine kokoro|say | setup | live | all | test'
+  '/speak on | off | stop | next | cast | cast <role> <voice> | name <role> <name> | actions on|off | intros on|off | classifier on|off | narrator on|off | thinking on|off | replies on|off | rate 200 | voice thinking|reply <name> | voices | engine kokoro|say | setup | live | all | test'
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -98,6 +109,10 @@ const S = {
   team: new Team(DEFAULTS),
   running: false,
   child: null as AsyncGenerator<unknown, unknown> | null,
+  /** The utterance heard now (from the moment it starts until the status line clears): what "next" skips. */
+  current: null as Utterance | null,
+  /** A `say` ended by "next": not a failure, so not said again in the system voice. */
+  skippedChild: null as AsyncGenerator<unknown, unknown> | null,
   /** Bumped by every hush: a run of an earlier epoch stops at its next utterance. */
   epoch: 0,
   /** The director's call in flight, if any: one at a time, and a new prompt's replaces it. */
@@ -191,9 +206,39 @@ function hush($: EngineInterface): void {
   if (S.kokoro.port !== null) {
     void $.http.fetch(`http://127.0.0.1:${S.kokoro.port}/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ epoch: S.epoch }) }).catch(() => undefined)
   }
+  idle($)
+}
+
+/** Nothing is heard any more: the status line and the ⏭ row go. */
+function idle($: EngineInterface): void {
   S.statusTimer?.cancel()
   S.statusTimer = null
+  S.current = null
   $.ui.status(undefined)
+  void update($, SPEAKING, () => false).catch(() => undefined)
+}
+
+/**
+ * "Next": the rest of what is being said goes (Team.skip: the whole thought, the reply's paragraph, table or code
+ * block, or the action line, including what of it is still to stream in), and what follows plays at once. The
+ * speaker's name, or undefined when nothing was playing.
+ */
+function next($: EngineInterface): string | undefined {
+  const u = S.current
+  if (!u?.section) return undefined
+  S.team.skip(u.section)
+  narrateAhead($)
+  if (S.kokoro.port !== null) {
+    void $.http.fetch(`http://127.0.0.1:${S.kokoro.port}/skip`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ section: u.section }) }).catch(() => undefined)
+  }
+  const child = S.child
+  if (child) {
+    S.skippedChild = child
+    void child.return(undefined).catch(() => undefined)
+  }
+  // The last utterance (the run is over, its status waits for it to play out): nothing more is heard.
+  if (!S.running) idle($)
+  return S.settings.cast[u.role].name
 }
 
 /** What the team queued: the next blocks' narration is asked for, and speech starts if it is idle. */
@@ -282,8 +327,10 @@ function sayVoiceFor(role: Role): string | undefined {
 
 /** An utterance is heard from now: the status line names its speaker, and their introduction counts as made. */
 function shown($: EngineInterface, u: Utterance): void {
+  S.current = u
   $.ui.status(u.status)
   S.team.spoke(u)
+  void update($, SPEAKING, () => true).catch(() => undefined)
 }
 
 /** About how long an utterance plays, at `rate` words a minute. */
@@ -319,7 +366,7 @@ async function work($: EngineInterface): Promise<void> {
       const rate = Math.round(u.kind === 'reply' ? S.settings.rate : S.settings.rate * THINKING_FASTER)
       playing = 0
       if (kokoro) {
-        const r = await kokoroSpeak($, u.text, kokoroVoiceFor(u.role), rate / KOKORO_WPM, mine)
+        const r = await kokoroSpeak($, u.text, kokoroVoiceFor(u.role), rate / KOKORO_WPM, mine, u.section)
         if (r === 'started') {
           // Kokoro answers as this utterance begins (the one before it has just ended): it is heard from now.
           S.kokoro.misses = 0
@@ -340,8 +387,8 @@ async function work($: EngineInterface): Promise<void> {
   } finally {
     S.running = false
     try {
-      if (mine === S.epoch && playing > 0 && !failed) S.statusTimer = $.clock.after(playing, () => S.running || $.ui.status(undefined))
-      else if (mine === S.epoch) $.ui.status(undefined)
+      if (mine === S.epoch && playing > 0 && !failed) S.statusTimer = $.clock.after(playing, () => S.running || idle($))
+      else if (mine === S.epoch) idle($)
     } catch {
       // the status line stays as it was
     }
@@ -367,6 +414,10 @@ async function sayLine($: EngineInterface, u: Utterance, rate: number, epoch: nu
       // killed by a hush, or it could not start
     }
     if (S.child === say) S.child = null
+    if (S.skippedChild === say) {
+      S.skippedChild = null
+      return
+    }
     if (code === 0 || epoch !== S.epoch) return
   }
 }
@@ -375,7 +426,7 @@ async function sayLine($: EngineInterface, u: Utterance, rate: number, epoch: nu
  * One utterance to the Kokoro server: 'started' as it begins playing, 'stopped' when a hush overtook it, 'failed'
  * when the server did not play it (gone, stalled past KOKORO_TIMEOUT_MS, or its audio output failed).
  */
-async function kokoroSpeak($: EngineInterface, text: string, voice: string, speed: number, epoch: number): Promise<'started' | 'stopped' | 'failed'> {
+async function kokoroSpeak($: EngineInterface, text: string, voice: string, speed: number, epoch: number, section?: string): Promise<'started' | 'stopped' | 'failed'> {
   // $.http.fetch takes no timeout: a sleep races it (a stuck server held speech up for good: Neon review #1).
   const timer = new AbortController()
   try {
@@ -383,7 +434,7 @@ async function kokoroSpeak($: EngineInterface, text: string, voice: string, spee
       $.http.fetch(`http://127.0.0.1:${S.kokoro.port}/speak`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice, speed, epoch }),
+        body: JSON.stringify({ text, voice, speed, epoch, section }),
       }),
       // A sleep cut short for any other reason leaves the fetch to decide, as before the timeout.
       $.clock.sleep(KOKORO_TIMEOUT_MS, { signal: timer.signal }).then(
@@ -663,6 +714,19 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // While a line plays: a ⏭ above the prompt, pressed by a click or by the chord bound to NEXT_ACTION (alt+→).
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next_) => {
+    if (e.props.hasSurvey || !S.settings.on || !(await read($, SPEAKING))) return next_(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    // h() is what JSX compiles to; a Box always makes an element.
+    return h(
+      Box,
+      null,
+      h(Button, { key: 'think-aloud-next', label: '⏭ next', action: NEXT_ACTION, plain: true, onPress: () => void next($) }),
+      h(Text, { dimColor: true }, '  alt+→ skips to the next block'),
+    ) as RenderElement
+  })
+
   on('command.run', { command: 'speak' }, async ($, e) => {
     const [raw = '', ...rest] = e.args.trim().split(/\s+/).filter(Boolean)
     // "/speak Live" and "/speak Thinking off" are the same commands (they wrote settings named "Live", "Thinking").
@@ -692,6 +756,11 @@ export const register: Register = on => {
       case 'stop':
         hush($)
         return { text: 'Stopped what was being said; still on for the next response.' }
+      case 'next':
+      case 'skip': {
+        const who = next($)
+        return { text: who ? `Skipped the rest of ${who}'s block.` : 'Nothing is being said.' }
+      }
       case 'thinking':
       case 'replies':
       case 'actions':

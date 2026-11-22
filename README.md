@@ -48,6 +48,9 @@ Also:
 - In live pace, speech keeps up with Claude: when it falls behind, the action lines go first, then old thinking;
   replies are always read in full.
 - Sending a new message or pressing Esc stops it at once.
+- **Next block**: `alt+→` (or the `⏭ next` row above the prompt while it speaks, or `/speak next`) skips the rest of
+  what is being said: the whole thought, the reply's paragraph, table or code block, or the tool line. What comes
+  after plays at once.
 - Silent in headless `claude -p` runs and in subagents.
 
 macOS only.
@@ -73,6 +76,21 @@ In the desktop app: click + next to the prompt box, then Plugins, Add marketplac
 
 It is on as soon as it is installed; the Mac voice speaks while Kokoro sets itself up.
 
+For the `alt+→` shortcut, add this to `~/.claude/keybindings.json` (create the file if it is not there; merge the
+entry if it is):
+
+```json
+{
+  "$schema": "https://www.schemastore.org/claude-code-keybindings.json",
+  "bindings": [{ "context": "Chat", "bindings": { "alt+right": "diff:back" } }]
+}
+```
+
+Claude Code has no keyboard actions of a plugin's own yet, so the shortcut borrows `diff:back`, which does nothing at
+the prompt; think-aloud's ⏭ button answers to it while it speaks. It takes over alt+→'s jump-a-word in the prompt.
+If your terminal sends ⌥→ as a word jump (`ESC f`: Terminal.app, or iTerm2's "Natural Text Editing" preset), bind
+`"alt+f"` the same way. Without a binding, click ⏭ or type `/speak next`.
+
 ## Use
 
 | Command | What it does |
@@ -80,6 +98,7 @@ It is on as soon as it is installed; the Mac voice speaks while Kokoro sets itse
 | `/speak` | Shows the current settings |
 | `/speak off` / `/speak on` | Turns it off or on (remembered across sessions) |
 | `/speak stop` | Stops what is being said now |
+| `/speak next` (`alt+→`) | Skips to the next block: the rest of this thought, paragraph, table or tool line goes |
 | `/speak test` | Plays a sample line: Theo thinking, then Maya replying |
 | `/speak cast` | Lists the team, their voices, who speaks now and the task board |
 | `/speak cast <role> <voice>` | Gives a member a voice: a Kokoro name (`bf_emma`) or a Mac voice (`Moira`) |

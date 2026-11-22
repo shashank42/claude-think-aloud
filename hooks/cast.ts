@@ -53,6 +53,8 @@ const QUERY_WORDS = 6
 const TOOL_JSON_MAX = 8192
 /** Past this many lines waiting (in `all` pace, or replies alone in `live`), the oldest go. */
 const QUEUE_MAX = 200
+/** The skipped sections remembered, newest kept: one only has to outlive its own block's streaming. */
+const SKIPPED_KEPT = 64
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -345,20 +347,23 @@ export type Kind = 'thinking' | 'reply' | 'action'
  * One thing waiting to be said, and who says it. A table or code block waits as `block` until its narration is in
  * (`pending`, which register.ts attaches): whatever follows it waits behind it, so speech keeps the screen's order.
  */
-export type Line = { role: Role; kind: Kind; text: string; block?: Block; pending?: Promise<string> }
+export type Line = { role: Role; kind: Kind; text: string; block?: Block; pending?: Promise<string>; section?: string }
 /**
  * What is said next: the words (an introduction in front, the first time), and the status line naming who. Nothing
  * of it counts as said until register.ts reports it playing (Team.spoke): Kokoro takes the next utterance while one
  * still plays.
+ *
+ * `section` is what one press of "next" skips (Team.skip): a whole thinking block, a reply's paragraph, table or code
+ * block, or one action line.
  */
-export type Utterance = { role: Role; kind: Kind; text: string; status: string }
+export type Utterance = { role: Role; kind: Kind; text: string; status: string; section?: string }
 
-/** The head of the queue, with what waits behind it from the same person joined on, up to `most` characters. */
+/** The head of the queue, with what waits behind it from the same person and section joined on, up to `most` characters. */
 export function takeUtterance(queue: Line[], most: number): Line | undefined {
   const first = queue.shift()
   if (!first) return undefined
-  const line: Line = { role: first.role, kind: first.kind, text: first.text }
-  while (queue[0] && queue[0].role === line.role && !queue[0].block && line.text.length + queue[0].text.length < most) {
+  const line: Line = { role: first.role, kind: first.kind, text: first.text, ...(first.section ? { section: first.section } : {}) }
+  while (queue[0] && queue[0].role === line.role && queue[0].section === line.section && !queue[0].block && line.text.length + queue[0].text.length < most) {
     line.text += ` ${queue.shift()!.text}`
   }
   return line
@@ -405,6 +410,10 @@ export class Team {
   private latestKey = ''
   private blockRoles = new Map<string, Role>()
   private introduced = new Set<Role>()
+  /** Sections skipped with "next": what of them is still queued or still streams in is never said. */
+  private skipped = new Set<string>()
+  /** Numbers the action lines' and /speak test's sections, one each. */
+  private lines = 0
   private toolsSince = 0
   private directedAt = Number.NEGATIVE_INFINITY
 
@@ -444,19 +453,31 @@ export class Team {
     if (this.latest.length < LATEST_MAX) this.latest = (this.latest + text).slice(0, LATEST_MAX)
   }
 
-  /** A block's parts as they complete: the reply's are the lead's; a thinking block's, all one person's. */
-  say(kind: 'thinking' | 'reply', key: string, parts: Part[]): void {
+  /**
+   * A block's parts as they complete: the reply's are the lead's; a thinking block's, all one person's. `paragraphs`
+   * (Sentences.paragraphs) numbers each part's paragraph: a reply's sections are its paragraphs, tables and code
+   * blocks; a thinking block is one section, the whole thought.
+   */
+  say(kind: 'thinking' | 'reply', key: string, parts: Part[], paragraphs: number[] = []): void {
     if (parts.length === 0 || !(kind === 'reply' ? this.settings.replies : this.settings.thinking)) return
     let role: Role = 'lead'
     if (kind === 'thinking') {
       role = this.blockRoles.get(key) ?? this.worker
       this.blockRoles.set(key, role)
     }
-    for (const part of parts) {
-      if (!isBlock(part)) this.push({ role, kind, text: part })
-      else if (this.settings.narrator) this.push({ role, kind, text: '', block: part })
-      else if (part.block === 'table') this.push({ role, kind, text: "There's a table on screen." })
-    }
+    parts.forEach((part, i) => {
+      const section = kind === 'thinking' ? key : `${key}#${paragraphs[i] ?? 0}`
+      if (!isBlock(part)) this.push({ role, kind, text: part, section })
+      else if (this.settings.narrator) this.push({ role, kind, text: '', block: part, section })
+      else if (part.block === 'table') this.push({ role, kind, text: "There's a table on screen.", section })
+    })
+  }
+
+  /** "Next": the section goes, what of it waits and what of it is still to come. */
+  skip(section: string): void {
+    this.skipped.add(section)
+    if (this.skipped.size > SKIPPED_KEPT) this.skipped.delete(this.skipped.values().next().value!)
+    for (let i = this.queue.length - 1; i >= 0; i--) if (this.queue[i]?.section === section) this.queue.splice(i, 1)
   }
 
   endBlock(key: string): void {
@@ -469,12 +490,12 @@ export class Team {
     if (this.tools.length > TOOLS_KEPT) this.tools.splice(0, this.tools.length - TOOLS_KEPT)
     this.toolsSince++
     const line = this.settings.actions ? actionLine(name, input) : undefined
-    if (line) this.push({ role: this.worker, kind: 'action', text: line })
+    if (line) this.push({ role: this.worker, kind: 'action', text: line, section: `line:${++this.lines}` })
   }
 
   /** One line straight onto the queue (`/speak test`). */
   line(role: Role, kind: Kind, text: string): void {
-    this.push({ role, kind, text })
+    this.push({ role, kind, text, section: `line:${++this.lines}` })
   }
 
   /** The user's new prompt. */
@@ -524,7 +545,7 @@ export class Team {
     if (!line) return undefined
     const cast = this.settings.cast
     const text = this.settings.intros && !this.introduced.has(line.role) ? `${introFor(line.role, cast)} ${line.text}` : line.text
-    return { role: line.role, kind: line.kind, text, status: `🔊 ${cast[line.role].name} · ${this.taskOf(line.role) ?? line.role}` }
+    return { role: line.role, kind: line.kind, text, status: `🔊 ${cast[line.role].name} · ${this.taskOf(line.role) ?? line.role}`, ...(line.section ? { section: line.section } : {}) }
   }
 
   /** An utterance is playing: its speaker has been introduced. */
@@ -546,6 +567,7 @@ export class Team {
   }
 
   private push(line: Line): void {
+    if (line.section !== undefined && this.skipped.has(line.section)) return
     this.queue.push(line)
     if (this.settings.pace === 'live') trimBacklog(this.queue)
     if (this.queue.length > QUEUE_MAX) this.queue.splice(0, this.queue.length - QUEUE_MAX)
@@ -585,7 +607,8 @@ export class StepReader {
         this.sentences = new Sentences()
       }
       this.team.heard(key, c.text)
-      this.team.say(this.kind ?? 'thinking', key, this.sentences.push(c.text))
+      const parts = this.sentences.push(c.text)
+      this.team.say(this.kind ?? 'thinking', key, parts, this.sentences.paragraphs())
     } else if (c.kind === 'tool') {
       this.close()
       this.call = { index: c.index, name: c.name, json: '' }
@@ -601,7 +624,8 @@ export class StepReader {
 
   private close(): void {
     if (this.key !== undefined && this.sentences && this.kind) {
-      this.team.say(this.kind, this.key, this.sentences.end())
+      const parts = this.sentences.end()
+      this.team.say(this.kind, this.key, parts, this.sentences.paragraphs())
       this.team.endBlock(this.key)
     }
     this.key = undefined

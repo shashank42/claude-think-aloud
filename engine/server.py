@@ -3,12 +3,14 @@
 Loads Kokoro-82M once (kokoro-onnx, CPU), then speaks what the mod sends over local HTTP (127.0.0.1, a free port it
 prints as "PORT <n>" once the model is loaded):
 
-  POST /speak {"text", "voice", "speed", "epoch"}
+  POST /speak {"text", "voice", "speed", "epoch", "section"}
         synthesises, waits for the utterance before it to finish, starts playing, and answers {"started": true} as
         it starts, so the mod sends the next one and it is synthesised while this one plays (no gap between
-        utterances); {"stopped": true} when a stop (or speech of a newer epoch) overtook it; 503 when the audio
-        output failed or stalled (the mod then says that line with the Mac voice)
+        utterances); {"stopped": true} when a stop (or speech of a newer epoch, or a skip of its section) overtook
+        it; 503 when the audio output failed or stalled (the mod then says that line with the Mac voice)
   POST /stop {"epoch"}                    drops what waits and cuts what plays, of every epoch before this one
+  POST /skip {"section"}                  "next": cuts what plays of that section and drops what of it waits or
+                                          is still being synthesised; the next utterance plays at once
   GET  /health                            {"ok": true, "voices": [...]}
 
 The epoch is the mod's own count of its hushes: a /stop and the /speak after it can arrive in either order, and the
@@ -22,6 +24,7 @@ The server exits when the session that started it is gone (its parent process ch
 server.<parent pid>.pid in the engine's home, so a reloaded mod in the same session can stop the one before it.
 """
 
+import collections
 import json
 import os
 import queue
@@ -77,9 +80,11 @@ synth_lock = threading.Lock()
 class Item:
     """One utterance: its audio, its epoch, and whether it began playing (`started` is set either way)."""
 
-    def __init__(self, epoch: int, audio: np.ndarray) -> None:
+    def __init__(self, epoch: int, audio: np.ndarray, section: str = "") -> None:
         self.epoch = epoch
         self.audio = audio
+        self.section = section
+        self.skipped = False
         self.started = threading.Event()
         self.played = False
 
@@ -102,7 +107,30 @@ class Player:
         # The epoch, the queue and its draining move together: a /stop between a check and a put lost nothing.
         self.lock = threading.Lock()
         self.items: "queue.Queue[Item]" = queue.Queue()
+        self.current: "Item | None" = None
+        # Sections skipped lately: an utterance of one still being synthesised is dropped when it is put.
+        self.skipped: "collections.deque[str]" = collections.deque(maxlen=64)
         threading.Thread(target=self._run, daemon=True).start()
+
+    def skip(self, section: str) -> None:
+        """The section goes: what of it plays is cut at its next block, what of it waits is dropped."""
+        with self.lock:
+            self.skipped.append(section)
+            if self.current is not None and self.current.section == section:
+                self.current.skipped = True
+            kept = []
+            while True:
+                try:
+                    item = self.items.get_nowait()
+                except queue.Empty:
+                    break
+                if item.section == section:
+                    item.skipped = True
+                    item.started.set()
+                else:
+                    kept.append(item)
+            for item in kept:
+                self.items.put(item)
 
     def advance(self, epoch: int) -> None:
         """Everything of an epoch before `epoch` goes: what waits now, what plays at its next block."""
@@ -118,7 +146,7 @@ class Player:
 
     def put(self, item: Item) -> bool:
         with self.lock:
-            if item.epoch != self.epoch:
+            if item.epoch != self.epoch or (item.section and item.section in self.skipped):
                 return False
             self.items.put(item)
             return True
@@ -134,17 +162,19 @@ class Player:
                     stream = close(stream)
                 continue
             try:
-                if item.epoch != self.epoch:
+                if item.epoch != self.epoch or item.skipped:
                     continue
                 if stream is None:
                     stream = sd.OutputStream(samplerate=RATE, channels=1, dtype="float32")
                     stream.start()
                     stream.write(np.zeros(int(RATE * LEAD_S), dtype=np.float32))
+                with self.lock:
+                    self.current = item
                 item.played = True
                 item.started.set()
                 cut = False
                 for i in range(0, len(item.audio), BLOCK):
-                    if item.epoch != self.epoch:
+                    if item.epoch != self.epoch or item.skipped:
                         cut = True
                         break
                     stream.write(item.audio[i : i + BLOCK])
@@ -164,6 +194,9 @@ class Player:
                 except Exception:
                     pass
             finally:
+                with self.lock:
+                    if self.current is item:
+                        self.current = None
                 item.started.set()
                 last = time.monotonic()
 
@@ -202,6 +235,12 @@ class Handler(BaseHTTPRequestHandler):
             player.advance(epoch if isinstance(epoch, int) else player.epoch + 1)
             self._send(200, {"ok": True})
             return
+        if self.path == "/skip":
+            section = body.get("section")
+            if isinstance(section, str) and section:
+                player.skip(section)
+            self._send(200, {"ok": True})
+            return
         if self.path != "/speak":
             self._send(404, {"error": "not found"})
             return
@@ -231,7 +270,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # a text the phonemiser cannot take: skip it
             self._send(200, {"error": str(e)[:200]})
             return
-        item = Item(epoch, np.asarray(audio, dtype=np.float32))
+        section = body.get("section")
+        item = Item(epoch, np.asarray(audio, dtype=np.float32), section if isinstance(section, str) else "")
         if not player.put(item):
             self._send(200, {"stopped": True})
             return
@@ -239,7 +279,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(503, {"error": "playback stalled"})
         elif item.played:
             self._send(200, {"started": True})
-        elif item.epoch != player.epoch:
+        elif item.epoch != player.epoch or item.skipped:
             self._send(200, {"stopped": True})
         else:
             self._send(503, {"error": "playback failed"})
