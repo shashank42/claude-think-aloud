@@ -1,0 +1,11 @@
+{
+  "name": "claude-think-aloud",
+  "owner": { "name": "shashank42" },
+  "plugins": [
+    {
+      "name": "think-aloud",
+      "source": "./",
+      "description": "Speaks Claude's thinking and replies aloud as they stream, with the Mac's own voices (say). /speak to switch it."
+    }
+  ]
+}
