@@ -447,6 +447,17 @@ test('through the hooks: the director puts Sam on it, the narrator says the tabl
     answers.push(r.value.answer)
   }
   expect(answers).toEqual(['step 0', 'step 0 sub', 'step 1'])
+  // While a line plays, the band above the prompt holds ⏭ next.
+  const band = await $.ui.mount({
+    plugin: 'think-aloud',
+    component: 'AbovePrompt',
+    requestId: 'think-aloud',
+    surface: 'terminal',
+    props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 } },
+  } as never)
+  const nextButton = await band.find({ type: 'Button' })
+  expect(nextButton?.text ?? nextButton?.label).toContain('next')
+  await band.unmount()
   open()
   await allSaid
 
