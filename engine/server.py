@@ -47,6 +47,50 @@ BLOCK = RATE // 20  # 50 ms: how soon a stop is heard
 IDLE_CLOSE_S = 20.0
 WAIT_S = 60.0  # how long a /speak waits for its turn to play before it reports a stall
 PID_FILE = os.path.join(HOME, f"server.{os.getppid()}.pid")
+FOLLOW_EVERY = 20  # blocks (1 s): how often a playing utterance checks whether the Mac's output device changed
+
+
+def _default_output_reader():
+    """The Mac's current default output device (CoreAudio's id), read live: PortAudio only learns the default when it
+    starts, so a stream kept open (or reopened) stayed on the earphones after the person picked Speakers (22 Nov 2026)."""
+    try:
+        import ctypes
+        import ctypes.util
+
+        ca = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreAudio"))
+
+        class Address(ctypes.Structure):
+            _fields_ = [("selector", ctypes.c_uint32), ("scope", ctypes.c_uint32), ("element", ctypes.c_uint32)]
+
+        four = lambda s: int.from_bytes(s.encode(), "big")  # noqa: E731
+        address = Address(four("dOut"), four("glob"), 0)  # default output device, global scope, main element
+
+        def read():
+            device, size = ctypes.c_uint32(0), ctypes.c_uint32(4)
+            # kAudioObjectSystemObject is 1
+            if ca.AudioObjectGetPropertyData(1, ctypes.byref(address), 0, None, ctypes.byref(size), ctypes.byref(device)):
+                return None
+            return device.value
+
+        return read
+    except Exception:
+        return lambda: None
+
+
+default_output = _default_output_reader()
+
+
+def open_stream():
+    """A stream on the Mac's output device as it is now: PortAudio lists the devices again first."""
+    try:
+        sd._terminate()
+        sd._initialize()
+    except Exception:
+        pass
+    stream = sd.OutputStream(samplerate=RATE, channels=1, dtype="float32")
+    stream.start()
+    stream.write(np.zeros(int(RATE * LEAD_S), dtype=np.float32))
+    return stream
 
 
 def write_pid() -> None:
@@ -153,6 +197,7 @@ class Player:
 
     def _run(self) -> None:
         stream = None
+        device = None  # the Mac's output device the stream was opened on
         last = 0.0
         while True:
             try:
@@ -164,19 +209,26 @@ class Player:
             try:
                 if item.epoch != self.epoch or item.skipped:
                     continue
+                # The person picked another output (Speakers, earphones) since the stream opened: follow it.
+                if stream is not None and default_output() != device:
+                    stream = close(stream)
                 if stream is None:
-                    stream = sd.OutputStream(samplerate=RATE, channels=1, dtype="float32")
-                    stream.start()
-                    stream.write(np.zeros(int(RATE * LEAD_S), dtype=np.float32))
+                    device = default_output()
+                    stream = open_stream()
                 with self.lock:
                     self.current = item
                 item.played = True
                 item.started.set()
                 cut = False
-                for i in range(0, len(item.audio), BLOCK):
+                for n, i in enumerate(range(0, len(item.audio), BLOCK)):
                     if item.epoch != self.epoch or item.skipped:
                         cut = True
                         break
+                    if n and n % FOLLOW_EVERY == 0 and default_output() != device:
+                        # Switched mid-utterance: the rest of it plays on the new output.
+                        stream = close(stream, abort=True)
+                        device = default_output()
+                        stream = open_stream()
                     stream.write(item.audio[i : i + BLOCK])
                 if cut:
                     # What the device still holds goes too: a stop is heard at once.
