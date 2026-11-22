@@ -1,5 +1,5 @@
 {
   "name": "think-aloud",
-  "version": "0.2.0",
-  "description": "Speaks Claude's thinking and replies aloud as they stream, with the Mac's own voices (say). /speak to switch it."
+  "version": "0.3.0",
+  "description": "Speaks Claude's thinking and replies aloud as they stream, as a small team of voices (Kokoro, set up by itself, or the Mac's say). /speak to switch it."
 }
