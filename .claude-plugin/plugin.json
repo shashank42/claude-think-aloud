@@ -1,6 +1,6 @@
 {
   "name": "think-aloud",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Speaks Claude's thinking and replies aloud as they stream, as a small team of voices (Kokoro, set up by itself, or the Mac's say). alt+→ skips to the next block; /speak to switch it.",
   "types": "./types/index.d.ts"
 }

@@ -635,7 +635,18 @@ export const register: Register = on => {
     } catch {
       // no /speak this session; speech still works
     }
+    try {
+      // What the keybinding runs (keybindings.json, Chat: "alt+right": "command:speak-next"); silent, no output row.
+      await $.command.register({ name: 'speak-next', description: 'think-aloud: skip to the next block (bind a key to command:speak-next)' })
+    } catch {
+      // no shortcut command this session; /speak next still works
+    }
     return next(e)
+  })
+
+  on('command.run', { command: 'speak-next' }, async $ => {
+    next($)
+    return {}
   })
 
   // The user's prompt: the director's first look at the turn, in the background.
@@ -723,7 +734,7 @@ export const register: Register = on => {
       Box,
       null,
       h(Button, { key: 'think-aloud-next', label: '⏭ next', action: NEXT_ACTION, plain: true, onPress: () => void next($) }),
-      h(Text, { dimColor: true }, '  alt+→ skips to the next block'),
+      h(Text, { dimColor: true }, '  ⌥→ skips to the next block'),
     ) as RenderElement
   })
 

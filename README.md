@@ -82,14 +82,13 @@ entry if it is):
 ```json
 {
   "$schema": "https://www.schemastore.org/claude-code-keybindings.json",
-  "bindings": [{ "context": "Chat", "bindings": { "alt+right": "diff:back" } }]
+  "bindings": [{ "context": "Chat", "bindings": { "alt+right": "command:speak-next" } }]
 }
 ```
 
-Claude Code has no keyboard actions of a plugin's own yet, so the shortcut borrows `diff:back`, which does nothing at
-the prompt; think-aloud's ⏭ button answers to it while it speaks. It takes over alt+→'s jump-a-word in the prompt.
-If your terminal sends ⌥→ as a word jump (`ESC f`: Terminal.app, or iTerm2's "Natural Text Editing" preset), bind
-`"alt+f"` the same way. Without a binding, click ⏭ or type `/speak next`.
+`command:speak-next` runs think-aloud's silent `/speak-next`. On a Mac, alt is Option (⌥). It takes over ⌥→'s
+jump-a-word in the prompt. If your terminal sends ⌥→ as a word jump (`ESC f`: Terminal.app, or iTerm2's "Natural Text
+Editing" preset), bind `"alt+f"` the same way. Without a binding, click ⏭ or type `/speak next`.
 
 ## Use
 
