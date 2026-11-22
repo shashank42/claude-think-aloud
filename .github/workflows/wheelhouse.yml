@@ -1,0 +1,61 @@
+# Packs the Python libraries the Kokoro voice needs (kokoro-onnx and sounddevice, with every dependency) into one
+# tarball per Mac architecture and attaches them to the `wheels-v1` release, so engine/setup.sh installs from GitHub
+# alone: some networks reach GitHub fast but stall on PyPI's CDN. Run by hand (Actions › wheelhouse › Run workflow).
+name: wheelhouse
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download the wheels (macOS arm64 and x86_64, Python 3.12)
+        run: |
+          set -euo pipefail
+          PKGS="kokoro-onnx==0.6.1 sounddevice==0.5.6"
+          python -m pip download --only-binary=:all: --python-version 3.12 \
+            --platform macosx_14_0_arm64 --platform macosx_11_0_arm64 --platform macosx_11_0_universal2 \
+            --platform macosx_10_9_universal2 --platform any -d wheels-arm64 $PKGS
+          python -m pip download --only-binary=:all: --python-version 3.12 \
+            --platform macosx_14_0_x86_64 --platform macosx_13_0_x86_64 --platform macosx_11_0_x86_64 \
+            --platform macosx_10_15_x86_64 --platform macosx_10_9_x86_64 --platform macosx_10_9_universal2 \
+            --platform any -d wheels-x86_64 $PKGS
+          ls -la wheels-arm64 wheels-x86_64
+
+      - name: Check the arm64 set installs and imports offline
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/check
+          /tmp/check/bin/python -m pip install --no-index --find-links wheels-arm64 kokoro-onnx==0.6.1 sounddevice==0.5.6
+          /tmp/check/bin/python -c "import kokoro_onnx, onnxruntime, numpy, phonemizer, espeakng_loader; print('imports ok', onnxruntime.__version__)"
+
+      - name: Pack with a notice and checksums
+        run: |
+          set -euo pipefail
+          for a in arm64 x86_64; do
+            cat > wheels-$a/NOTICE.txt <<'EOF'
+          Unmodified wheels from PyPI (https://pypi.org), redistributed for think-aloud's setup. Each keeps its own licence
+          inside its .dist-info folder; sources are on PyPI and in each project's repository (e.g. phonemizer-fork and
+          espeakng-loader are GPL-3.0: https://github.com/thewh1teagle/phonemizer-fork, https://github.com/thewh1teagle/espeakng-loader).
+          EOF
+            tar -czf wheels-$a.tar.gz wheels-$a
+          done
+          shasum -a 256 wheels-*.tar.gz | tee SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release delete wheels-v1 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create wheels-v1 --repo "$GITHUB_REPOSITORY" --title "Python wheels for the Kokoro voice (v1)" \
+            --notes "kokoro-onnx 0.6.1 and sounddevice 0.5.6 with their dependencies, Python 3.12, macOS arm64 and x86_64. Used by engine/setup.sh. Checksums in SHA256SUMS." \
+            wheels-arm64.tar.gz wheels-x86_64.tar.gz SHA256SUMS
