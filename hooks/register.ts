@@ -726,9 +726,11 @@ export const register: Register = on => {
 
   // A new message, or Esc: what is still being said is old news.
   on('prompt.submit', async ($, e, next) => {
-    // Never in the prompt's way: a failure here only leaves the old speech playing.
+    // Never in the prompt's way: a failure here only leaves the old speech playing. A message typed while a turn runs
+    // (turnId set) is queued into it and interrupts nothing, so the speech goes on (owner, 22 Nov 2026: Theo kept
+    // stopping mid-thought); Esc still stops it (turn.complete, aborted).
     try {
-      hush($)
+      if (!e.turnId) hush($)
     } catch {
       // nothing to do
     }
