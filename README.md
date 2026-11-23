@@ -39,8 +39,8 @@ Seven fixed people, one per kind of work, the same in every session:
   not at all. If it is slow or off: "There's a table on screen.", and code stays silent.
 - The first time each person speaks in a session, they say who they are and their role ("Sam here, the ops
   engineer, on builds and deploys.").
-- What is being said is shown in an amber band above the prompt ("🔊 Theo: …", with ⏮ and ⏭), and a reply block
-  being spoken is lit amber in the transcript too. While a thought is spoken, the tool rows right under its "Thought
+- A thought being spoken is shown in an amber band above the prompt ("🔊 Theo: …"; ⏮ and ⏭ under it while
+  anything plays), and a reply block being spoken is lit amber in the transcript. While a thought is spoken, the tool rows right under its "Thought
   for" row are lit too, in the fullscreen layout (`CLAUDE_CODE_NO_FLICKER=1 claude`). On the main screen (tmux by
   default) finished rows sit in the scrollback and are not redrawn, so there the band is where a thought is seen.
 - **Nothing is read out word for word.** Thinking and replies are summed up by a third Haiku call (the synthesizer):
