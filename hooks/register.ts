@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
-import { boardText, defaultCast, mergeCast, ROLES, roleOf, StepReader, Team, TEAM, WORKERS, type Line, type Role, type TeamSettings, type Utterance } from './cast'
-import { fallbackNarration, narrationOf, narratorPrompt, speakableOf, speakablePrompt } from './speech'
+import { boardText, defaultCast, mergeCast, ROLES, roleOf, StepReader, Team, TEAM, trimBacklog, WORKERS, type Line, type Role, type TeamSettings, type Utterance } from './cast'
+import { fallbackNarration, gistOf, narrationOf, narratorPrompt, spoken, synthOf, synthPrompt } from './speech'
 
 /**
  * think-aloud: Claude's thinking and replies, spoken as they stream by a small fixed team of voices (docs/cast.md),
@@ -22,7 +22,7 @@ import { fallbackNarration, narrationOf, narratorPrompt, speakableOf, speakableP
  *
  * In `live` pace (the default) speech keeps up with the model: when more than BACKLOG_MAX lines wait, the action
  * lines go first, then the oldest thinking (the reply's never). Sending a message, pressing Esc, or `/speak stop`
- * silences it at once. "Next" (alt+→, the ⏭ above the prompt, or `/speak next`) skips the rest of what is being said:
+ * silences it at once. "Next" (⌘→ or ⌘←, the ⏭ above the prompt, or `/speak next`) skips the rest of what is being said:
  * the whole thought, the reply's paragraph, table or code block, or the action line; what follows plays at once.
  * `/speak` shows and changes the settings, kept across sessions.
  */
@@ -69,8 +69,14 @@ const KOKORO_VOICE = /^[a-z]{2}_[a-z]+$/i
 /** The director's and the narrator's limits: past them their answer is not waited for. */
 const DIRECTOR_TIMEOUT_MS = 3000
 const NARRATOR_TIMEOUT_MS = 4000
-/** The speech editor's limit: past it the line is said as written. */
-const SPEAKABLE_TIMEOUT_MS = 8000
+/** The synthesizer's limit: past it, the stretch's first sentence or so is said (gistOf). */
+const SYNTH_TIMEOUT_MS = 8000
+/** The most thinking or reply text summed up in one go: all that waits from one person's section, up to this. */
+const SYNTH_BATCH_MAX = 1500
+/** What the synthesizer and the narrator are shown of what was said lately, so nothing is said twice. */
+const RECENT_KEPT = 6
+/** Kokoro restarted by itself this many times a session at most, after its server died or kept failing. */
+const KOKORO_RESTARTS_MAX = 2
 /** Tables and code blocks narrated ahead of being said, at most: a reply of twelve snippets made twelve calls at once. */
 const NARRATE_AHEAD = 2
 /**
@@ -97,8 +103,12 @@ const RATE_MAX = 400
 const NEXT_ACTION = 'diff:back'
 /** Whether a line is playing: the ⏭ row above the prompt shows only then. */
 const SPEAKING = atom({ plugin: 'think-aloud', key: 'speaking' } as const, false)
+/** The start of the reply text being spoken now ('' for none): the transcript block holding it is lit (owner, 23 Nov 2026). */
+const LIT = atom({ plugin: 'think-aloud', key: 'lit' } as const, '')
+/** The lit block's background: amber, as if translucent over a dark terminal. */
+const LIT_COLOR = '#4b3e18'
 const USAGE =
-  '/speak on | off | stop | next | cast | cast <role> <voice> | name <role> <name> | actions on|off | intros on|off | classifier on|off | narrator on|off | thinking on|off | replies on|off | rate 200 | voice thinking|reply <name> | voices | engine kokoro|say | setup | live | all | test'
+  '/speak on | off | stop | next | back | cast | cast <role> <voice> | name <role> <name> | actions on|off | intros on|off | classifier on|off | narrator on|off | thinking on|off | replies on|off | rate 200 | voice thinking|reply <name> | voices | engine kokoro|say | setup | live | all | test'
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -123,8 +133,12 @@ const S = {
   narrating: new Map<Line, AbortController>(),
   /** Clears the status line once Kokoro's last utterance has played out. */
   statusTimer: null as { cancel: () => void } | null,
-  /** The speech editor this session (/speak shows it): lines reworded, left as written, or said raw (timeout, error). */
-  editor: { rewritten: 0, kept: 0, failed: 0 },
+  /** The synthesizer this session (/speak shows it): stretches summed up, left unsaid as nothing new, or cut to a gist. */
+  synth: { said: 0, silent: 0, gist: 0 },
+  /** The last few utterances heard, newest last: the "said recently" of the synthesizer and the narrator, and what "back" replays. */
+  played: [] as Utterance[],
+  /** Taken off the queue by the run and not yet heard: "back" puts it back. */
+  preparing: null as Line | null,
   /** The voices this Mac has (`say -v ?`), lowercased, full and short ("tara (english (india))", "tara"); null when unknown. */
   voices: null as Set<string> | null,
   /** The Kokoro engine in this session: its server's port once it is up. */
@@ -135,6 +149,8 @@ const S = {
     port: null as number | null,
     /** Lines in a row it failed to play. */
     misses: 0,
+    /** Restarts made by itself this session (KOKORO_RESTARTS_MAX). */
+    restarts: 0,
     voices: [] as string[],
     /** The last line setup or the server wrote: what /speak shows when it failed. */
     note: '',
@@ -195,14 +211,14 @@ async function save($: EngineInterface): Promise<void> {
   await $.store.set(STORE_KEY, S.settings)
 }
 
-/** Everything said or waiting goes: the queue, the narrator's and the director's calls, `say`, Kokoro's playback. */
-function hush($: EngineInterface): void {
+/** What was said lately, "Name: words": the synthesizer's and the narrator's "said recently". */
+function recent(): string[] {
+  return S.played.map(u => `${S.settings.cast[u.role].name}: ${u.text}`)
+}
+
+/** Nothing plays any more (`say`, Kokoro's playback and what it prepared); a run of the old epoch stops. */
+function silence($: EngineInterface): void {
   S.epoch++
-  S.team.hush()
-  for (const stop of S.narrating.values()) stop.abort()
-  S.narrating.clear()
-  S.directing?.abort()
-  S.directing = null
   const speaking = S.child
   S.child = null
   if (speaking) void speaking.return(undefined).catch(() => undefined)
@@ -210,7 +226,38 @@ function hush($: EngineInterface): void {
   if (S.kokoro.port !== null) {
     void $.http.fetch(`http://127.0.0.1:${S.kokoro.port}/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ epoch: S.epoch }) }).catch(() => undefined)
   }
+}
+
+/** Everything said or waiting goes: the queue, the narrator's and the director's calls, `say`, Kokoro's playback. */
+function hush($: EngineInterface): void {
+  silence($)
+  S.team.hush()
+  S.preparing = null
+  for (const stop of S.narrating.values()) stop.abort()
+  S.narrating.clear()
+  S.directing?.abort()
+  S.directing = null
   idle($)
+}
+
+/**
+ * "Back" (⌘←): the block before the one playing is said again, then that one from its start, then the rest as before.
+ * What the next run had taken to prepare goes back too. The speaker's name, or undefined when nothing was said yet.
+ */
+function back($: EngineInterface): string | undefined {
+  const now = S.current
+  const before = now ? S.played[S.played.lastIndexOf(now) - 1] : S.played[S.played.length - 1]
+  const again = [before, now].filter((u): u is Utterance => u !== undefined && u !== null)
+  if (again.length === 0) return undefined
+  silence($)
+  S.played = S.played.filter(u => !again.includes(u))
+  // Said as they were heard: a section of their own ("line:") keeps them from being summed up a second time.
+  const lines: Line[] = again.map((u, i) => ({ role: u.role, kind: u.kind, text: u.text, section: `line:back:${S.epoch}:${i}` }))
+  if (S.preparing) lines.push(S.preparing)
+  S.preparing = null
+  S.team.queue.unshift(...lines)
+  play($)
+  return S.settings.cast[again[0]!.role].name
 }
 
 /** Nothing is heard any more: the status line and the ⏭ row go. */
@@ -220,6 +267,7 @@ function idle($: EngineInterface): void {
   S.current = null
   $.ui.status(undefined)
   void update($, SPEAKING, () => false).catch(() => undefined)
+  void update($, LIT, () => '').catch(() => undefined)
 }
 
 /**
@@ -276,7 +324,7 @@ async function narrate($: EngineInterface, line: Line): Promise<string> {
   S.narrating.set(line, stop)
   try {
     const r = await $.model.complete(
-      { model: 'haiku', effort: 'low', maxTokens: 200, timeoutMs: NARRATOR_TIMEOUT_MS, prompt: narratorPrompt(block) },
+      { model: 'haiku', effort: 'low', maxTokens: 200, timeoutMs: NARRATOR_TIMEOUT_MS, prompt: narratorPrompt(block, recent()) },
       { signal: stop.signal },
     )
     if (r.isAnswered) return narrationOf(r.text, block)
@@ -290,20 +338,25 @@ async function narrate($: EngineInterface, line: Line): Promise<string> {
 }
 
 /**
- * An utterance as it should sound (Haiku, speakablePrompt): "22 Nov" said as 22 November, "5–9 s" as 5 to 9 seconds.
- * With the narrator off, or when Haiku is slow or fails, the words as written. Never throws.
+ * A stretch of thinking or reply summed up for the ear (Haiku, synthPrompt): only what is new and salient, with what
+ * was said lately in view; '' when there is nothing new. When Haiku is slow or fails, its first sentence or so.
+ * Never throws.
  */
-async function speakable($: EngineInterface, text: string): Promise<string> {
-  if (!S.settings.narrator || !/[\p{L}\p{N}]/u.test(text)) return text
+async function synthesize($: EngineInterface, text: string, kind: 'thinking' | 'reply'): Promise<string> {
+  if (!/[\p{L}\p{N}]/u.test(text)) return ''
   try {
-    const r = await $.model.complete({ model: 'haiku', effort: 'low', maxTokens: 400, timeoutMs: SPEAKABLE_TIMEOUT_MS, prompt: speakablePrompt(text) })
-    const said = r.isAnswered ? speakableOf(r.text, text) : ''
-    S.editor[!said ? 'failed' : said === text ? 'kept' : 'rewritten']++
-    return said || text
+    const r = await $.model.complete({ model: 'haiku', effort: 'low', maxTokens: 200, timeoutMs: SYNTH_TIMEOUT_MS, prompt: synthPrompt(text, kind, S.team.asked, recent()) })
+    // An empty reply is the synthesizer choosing silence; a timeout or an error is not.
+    if (r.isAnswered || r.reason === 'empty-reply') {
+      const said = r.isAnswered ? synthOf(r.text) : ''
+      S.synth[said ? 'said' : 'silent']++
+      return said
+    }
   } catch {
-    S.editor.failed++
-    return text
+    // below: the gist
   }
+  S.synth.gist++
+  return gistOf(text)
 }
 
 /** Asks the director who speaks now, in the background; its answer stands from the next block on. Never throws. */
@@ -347,11 +400,17 @@ function sayVoiceFor(role: Role): string | undefined {
 }
 
 /** An utterance is heard from now: the status line names its speaker, and their introduction counts as made. */
-function shown($: EngineInterface, u: Utterance): void {
+function shown($: EngineInterface, u: Utterance, source = ''): void {
   S.current = u
+  S.preparing = null
   $.ui.status(u.status)
   S.team.spoke(u)
+  S.played.push(u)
+  if (S.played.length > RECENT_KEPT) S.played.shift()
   void update($, SPEAKING, () => true).catch(() => undefined)
+  // The reply's words as written (not as summed up), so the block on screen that holds them can be found and lit.
+  const lit = u.kind === 'reply' ? source.slice(0, 60) : ''
+  void update($, LIT, () => lit).catch(() => undefined)
 }
 
 /** About how long an utterance plays, at `rate` words a minute. */
@@ -365,44 +424,64 @@ async function work($: EngineInterface): Promise<void> {
   S.statusTimer = null
   const mine = S.epoch
   const team = S.team
+  /** The run failed, or stopped with lines left on purpose (Kokoro not up yet): no new run starts by itself. */
   let failed = false
   /** Kokoro's last utterance, still playing when this run ends: the status line stays up until it is over. */
   let playing = 0
   try {
     while (team.queue.length > 0 && mine === S.epoch) {
+      const kokoro = S.settings.engine === 'kokoro'
+      if (kokoro && S.kokoro.port === null) {
+        // Kokoro only, never the Mac voice in its place (owner, 23 Nov 2026: the two once talked over each other):
+        // what waits is said once the server is up (serveKokoro plays it), restarted here if it died.
+        if (S.kokoro.state === 'idle' || (S.kokoro.state === 'failed' && S.kokoro.restarts++ < KOKORO_RESTARTS_MAX)) void startKokoro($)
+        failed = true
+        break
+      }
       const head = team.queue[0]!
+      /** A table or code block's narration: its words are chosen already, not summed up again. */
+      let narrated = false
       if (head.block) {
         // A table or code block: its narration first, so what follows it is heard after it, as on screen.
         const said = await (head.pending ?? (head.pending = narrate($, head)))
         if (mine !== S.epoch) break
         team.settle(head, said)
         narrateAhead($)
+        if (!said || team.queue[0] !== head) continue
+        narrated = true
+      }
+      // Thinking and replies are summed up (Haiku), all that waits of one person's section at once; action lines and
+      // /speak test are said as written. With the narrator off, everything is said as written.
+      const synth = S.settings.narrator && !narrated && head.kind !== 'action' && !head.section?.startsWith('line:')
+      const u = team.next(narrated ? 1 : synth ? SYNTH_BATCH_MAX : kokoro ? KOKORO_UTTERANCE_MAX : UTTERANCE_MAX)
+      if (!u) break
+      S.preparing = { role: u.role, kind: u.kind, text: u.text, ...(u.section ? { section: u.section } : {}) }
+      // Summed up while the utterance before it still plays; skipped meanwhile, or nothing new, it is not said.
+      const said = synth ? await synthesize($, u.text, u.kind === 'reply' ? 'reply' : 'thinking') : u.text
+      if (mine !== S.epoch) continue
+      if ((u.section !== undefined && team.isSkipped(u.section)) || !said) {
+        S.preparing = null
         continue
       }
-      // Everything already waiting from the same person, as one utterance: one say per line ended each line with
-      // a closing intonation and a gap, which sounded cut off mid-thought.
-      const kokoro = S.settings.engine === 'kokoro' && S.kokoro.port !== null
-      const u = team.next(kokoro ? KOKORO_UTTERANCE_MAX : UTTERANCE_MAX)
-      if (!u) break
-      // Said for the ear (Haiku), while the utterance before it still plays; skipped meanwhile, it is not said.
-      u.text = await speakable($, u.text)
-      if (mine !== S.epoch || (u.section !== undefined && team.isSkipped(u.section))) continue
+      const source = narrated ? '' : u.text
+      u.text = u.intro ? `${u.intro} ${said}` : said
       const rate = Math.round(u.kind === 'reply' ? S.settings.rate : S.settings.rate * THINKING_FASTER)
       playing = 0
       if (kokoro) {
-        const r = await kokoroSpeak($, u.text, kokoroVoiceFor(u.role), rate / KOKORO_WPM, mine, u.section)
+        // One retry: a failed line is tried again, then left unsaid; a server that keeps failing is restarted.
+        let r = await kokoroSpeak($, u.text, kokoroVoiceFor(u.role), rate / KOKORO_WPM, mine, u.section)
+        if (r === 'failed' && mine === S.epoch) r = await kokoroSpeak($, u.text, kokoroVoiceFor(u.role), rate / KOKORO_WPM, mine, u.section)
         if (r === 'started') {
           // Kokoro answers as this utterance begins (the one before it has just ended): it is heard from now.
           S.kokoro.misses = 0
-          shown($, u)
+          shown($, u, source)
           playing = playMs(u.text, rate)
-          continue
+        } else if (r === 'failed' && mine === S.epoch && ++S.kokoro.misses >= KOKORO_MISSES_MAX) {
+          stopKokoro('failed', 'the voice server stopped playing')
         }
-        if (r === 'stopped' || mine !== S.epoch) continue
-        // This line in the Mac's voice; Kokoro is given up for the session only once it fails again and again.
-        if (++S.kokoro.misses >= KOKORO_MISSES_MAX) stopKokoro('failed', 'the voice server stopped playing')
+        continue
       }
-      shown($, u)
+      shown($, u, source)
       await sayLine($, u, rate, mine)
     }
   } catch {
@@ -489,7 +568,7 @@ function stopKokoro(state: 'idle' | 'failed', note?: string): void {
 
 /**
  * The Kokoro engine for this session: setup.sh first where it has not finished on this Mac (in the background, its
- * steps in the status line), then the voice server. Never awaited by session.start: say speaks meanwhile.
+ * steps in the status line), then the voice server. Never awaited by session.start: speech waits for it.
  * `repair` (/speak setup): the server stops, and setup.sh runs with --repair even where ready-v1 says it is done,
  * so a broken install (a Python upgrade, a lost model file) can be fixed from inside a session (Neon review #5).
  */
@@ -503,8 +582,8 @@ async function startKokoro($: EngineInterface, repair = false): Promise<void> {
       S.kokoro.state = 'setting-up'
       $.ui.toast(
         repair
-          ? 'think-aloud: checking the Kokoro voice and rebuilding what is broken. The Mac voice speaks meanwhile.'
-          : 'think-aloud: setting up the Kokoro voice, one time (about 350 MB). The Mac voice speaks until it is ready.',
+          ? 'think-aloud: checking the Kokoro voice and rebuilding what is broken. Speech resumes when it is ready.'
+          : 'think-aloud: setting up the Kokoro voice, one time (about 350 MB). Speech starts when it is ready.',
       )
       const setup = $.process.spawn({ argv: ['/bin/bash', `${$.plugin.root}/engine/setup.sh`, ...(repair ? ['--repair'] : [])] })
       for await (const { text } of setup) {
@@ -518,7 +597,7 @@ async function startKokoro($: EngineInterface, repair = false): Promise<void> {
       $.ui.status(undefined)
       if (code !== 0) {
         S.kokoro.state = 'failed'
-        $.ui.toast(`think-aloud: the Kokoro voice could not be set up (${S.kokoro.note || `exit ${code}`}). Still speaking with the Mac voice; /speak setup tries again.`)
+        $.ui.toast(`think-aloud: the Kokoro voice could not be set up (${S.kokoro.note || `exit ${code}`}). Silent until then; /speak setup tries again, /speak engine say uses the Mac voice.`)
         return
       }
       $.ui.toast('think-aloud: the Kokoro voice is ready.')
@@ -565,6 +644,8 @@ async function serveKokoro($: EngineInterface): Promise<void> {
         } catch {
           S.kokoro.voices = []
         }
+        // What waited for the voice is said now.
+        play($)
       } else if (stream === 'stderr') {
         const line = text.trim().split('\n').pop()
         if (line) S.kokoro.note = line
@@ -626,11 +707,11 @@ function engineNow(): string {
     case 'ready':
       return 'Engine: Kokoro.'
     case 'setting-up':
-      return `Engine: Kokoro is being set up (${S.kokoro.note || 'starting'}); the Mac voice speaks meanwhile.`
+      return `Engine: Kokoro is being set up (${S.kokoro.note || 'starting'}); speech starts when it is ready.`
     case 'starting':
-      return 'Engine: Kokoro is loading; the Mac voice speaks meanwhile.'
+      return 'Engine: Kokoro is loading; speech starts when it is ready.'
     case 'failed':
-      return `Engine: Kokoro is not running (${S.kokoro.note || 'unknown'}); the Mac voice speaks. /speak setup tries again.`
+      return `Engine: Kokoro is not running (${S.kokoro.note || 'unknown'}); silent until it is back. /speak setup tries again.`
     default:
       return 'Engine: Kokoro starts with the next session (/speak setup now).'
   }
@@ -643,6 +724,7 @@ export const register: Register = on => {
       S.interactive = e.isInteractive !== false
       await load($)
       S.team.reset()
+      S.played = []
       // In the background, and only where it will speak: `say -v ?` held every session's start up.
       if (S.interactive && S.settings.on) {
         void loadVoices($)
@@ -660,8 +742,9 @@ export const register: Register = on => {
       // no /speak this session; speech still works
     }
     try {
-      // What the keybinding runs (keybindings.json, Chat: "alt+right": "command:speak-next"); silent, no output row.
+      // What the keybindings run (keybindings.json, Chat: "cmd+right": "command:speak-next", "cmd+left": "command:speak-back"); silent, no output row.
       await $.command.register({ name: 'speak-next', description: 'think-aloud: skip to the next block (bind a key to command:speak-next)' })
+      await $.command.register({ name: 'speak-back', description: 'think-aloud: back to the block before (bind a key to command:speak-back)' })
     } catch {
       // no shortcut command this session; /speak next still works
     }
@@ -670,6 +753,11 @@ export const register: Register = on => {
 
   on('command.run', { command: 'speak-next' }, async $ => {
     next($)
+    return {}
+  })
+
+  on('command.run', { command: 'speak-back' }, async $ => {
+    back($)
     return {}
   })
 
@@ -730,17 +818,26 @@ export const register: Register = on => {
   })
 
   // A new message, or Esc: what is still being said is old news.
+  // A new message does not cut speech off (owner, 23 Nov 2026: "be in sync with Claude, as live mode is"): what is
+  // being said finishes, the old turn's thinking and action lines still waiting go, its reply's lines stay. Esc still
+  // stops it all (turn.complete, aborted).
   on('prompt.submit', async ($, e, next) => {
-    // Never in the prompt's way: a failure here only leaves the old speech playing. A message typed while a turn runs
-    // (turnId set) is queued into it and interrupts nothing, so the speech goes on (owner, 22 Nov 2026: Theo kept
-    // stopping mid-thought); Esc still stops it (turn.complete, aborted).
     try {
-      if (!e.turnId) hush($)
+      if (!e.turnId) trimBacklog(S.team.queue, 0, 0)
     } catch {
       // nothing to do
     }
     return next(e)
   }).catch(($, e, next) => next(e))
+
+  // The reply block being spoken is lit in the transcript, amber over its rows, while it plays.
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next_) => {
+    const lit = S.settings.on ? await read($, LIT) : ''
+    const drawn = await next_(e)
+    if (!lit || e.props.onScreen === null || !e.props.text.split('\n').map(spoken).join(' ').includes(lit)) return drawn
+    const { Box } = $.ui.resolve(e)
+    return h(Box, { flexDirection: 'column', backgroundColor: LIT_COLOR }, drawn) as RenderElement
+  })
 
   on('turn.complete', async ($, e, next) => {
     try {
@@ -751,7 +848,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // While a line plays: a ⏭ above the prompt, pressed by a click or by the chord bound to NEXT_ACTION (alt+→).
+  // While a line plays: a ⏭ above the prompt, pressed by a click or by the chord bound to NEXT_ACTION.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next_) => {
     if (e.props.hasSurvey || !S.settings.on || !(await read($, SPEAKING))) return next_(e)
     const { Box, Button, Text } = $.ui.resolve(e)
@@ -760,7 +857,7 @@ export const register: Register = on => {
       Box,
       null,
       h(Button, { key: 'think-aloud-next', label: '⏭ next', action: NEXT_ACTION, plain: true, onPress: () => void next($) }),
-      h(Text, { dimColor: true }, '  ⌥→ skips to the next block'),
+      h(Text, { dimColor: true }, '  ⌘← back · ⌘→ next block'),
     ) as RenderElement
   })
 
@@ -793,6 +890,11 @@ export const register: Register = on => {
       case 'stop':
         hush($)
         return { text: 'Stopped what was being said; still on for the next response.' }
+      case 'back':
+      case 'previous': {
+        const who = back($)
+        return { text: who ? `Back to ${who}'s block before.` : 'Nothing has been said yet.' }
+      }
       case 'next':
       case 'skip': {
         const who = next($)
@@ -885,7 +987,7 @@ export const register: Register = on => {
     }
     await save($)
     return {
-      text: `${note ? `${note} ` : ''}think-aloud is ${onOff(S.settings.on)}: ${teamNow()}; ${S.settings.rate} words a minute, ${S.settings.pace} pace. ${engineNow()} Speech editor: ${S.editor.rewritten} lines reworded, ${S.editor.kept} unchanged, ${S.editor.failed} said as written (Haiku slow or failed).${S.interactive ? '' : ' (Not in this non-interactive session.)'}`,
+      text: `${note ? `${note} ` : ''}think-aloud is ${onOff(S.settings.on)}: ${teamNow()}; ${S.settings.rate} words a minute, ${S.settings.pace} pace. ${engineNow()} Synthesizer: ${S.synth.said} said, ${S.synth.silent} left unsaid (nothing new), ${S.synth.gist} cut to a gist (Haiku slow or failed).${S.interactive ? '' : ' (Not in this non-interactive session.)'}`,
     }
   })
 }

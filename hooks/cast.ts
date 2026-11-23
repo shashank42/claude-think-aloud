@@ -27,13 +27,13 @@ export type Cast = Record<Role, Person>
  * next one to try where a Mac lacks it.
  */
 export const TEAM: Record<Role, Person & { owns: string; intro: string; sayElse?: string }> = {
-  lead: { name: 'Maya', kokoro: 'af_heart', say: 'Samantha', intro: '', owns: 'everything said to the user: the visible reply' },
-  planner: { name: 'Theo', kokoro: 'bm_george', say: 'Daniel', intro: 'on the plan', owns: 'understanding the ask, planning, research: web, docs, reading and searching code' },
-  app: { name: 'Kai', kokoro: 'am_fenrir', say: 'Rishi', intro: 'on the app', owns: 'front end and apps: UI code, mobile apps, web pages, styles, layouts, screenshots, emulators' },
-  backend: { name: 'Emma', kokoro: 'bf_emma', say: 'Karen', intro: 'on the backend', owns: 'servers, APIs, routes, services, schemas, migrations, server-side code' },
-  data: { name: 'Nora', kokoro: 'af_bella', say: 'Tara', sayElse: 'Samantha', intro: 'on the data', owns: 'data and analysis: queries, notebooks, CSVs, metrics, reports, numbers' },
-  ops: { name: 'Sam', kokoro: 'am_puck', say: 'Aman', sayElse: 'Daniel', intro: 'on builds', owns: 'builds, deploys, git and GitHub, CI, infra, package installs, devices, shell plumbing' },
-  qa: { name: 'Isla', kokoro: 'bf_isabella', say: 'Moira', sayElse: 'Karen', intro: 'on testing', owns: 'tests, type checks, lint, code review, verifying a fix, chasing a failure' },
+  lead: { name: 'Maya', kokoro: 'af_heart', say: 'Samantha', intro: 'your lead', owns: 'everything said to the user: the visible reply' },
+  planner: { name: 'Theo', kokoro: 'bm_george', say: 'Daniel', intro: 'the planner', owns: 'understanding the ask, planning, research: web, docs, reading and searching code' },
+  app: { name: 'Kai', kokoro: 'am_fenrir', say: 'Rishi', intro: 'the app developer', owns: 'front end and apps: UI code, mobile apps, web pages, styles, layouts, screenshots, emulators' },
+  backend: { name: 'Emma', kokoro: 'bf_emma', say: 'Karen', intro: 'the backend engineer', owns: 'servers, APIs, routes, services, schemas, migrations, server-side code' },
+  data: { name: 'Nora', kokoro: 'af_bella', say: 'Tara', sayElse: 'Samantha', intro: 'the data analyst', owns: 'data and analysis: queries, notebooks, CSVs, metrics, reports, numbers' },
+  ops: { name: 'Sam', kokoro: 'am_puck', say: 'Aman', sayElse: 'Daniel', intro: 'the ops engineer, on builds and deploys', owns: 'builds, deploys, git and GitHub, CI, infra, package installs, devices, shell plumbing' },
+  qa: { name: 'Isla', kokoro: 'bf_isabella', say: 'Moira', sayElse: 'Karen', intro: 'the QA engineer, on testing', owns: 'tests, type checks, lint, code review, verifying a fix, chasing a failure' },
 }
 
 /** Live pace: when more lines than this wait, actions go first, then the oldest thinking, down to BACKLOG_KEEP. */
@@ -87,10 +87,9 @@ export function roleOf(word: string, cast: Cast): Role | undefined {
   return ROLES.find(r => r === w) ?? ROLES.find(r => cast[r].name.toLowerCase() === w)
 }
 
-/** The few words a person opens with, the first time they speak in a session ("Sam here, on builds."). */
+/** The few words a person opens with, the first time they speak in a session ("Sam here, the ops engineer, on builds and deploys."). */
 export function introFor(role: Role, cast: Cast): string {
-  const on = TEAM[role].intro
-  return on ? `${cast[role].name} here, ${on}.` : `${cast[role].name} here.`
+  return `${cast[role].name} here, ${TEAM[role].intro}.`
 }
 
 // ---- What a tool call sounds like ----------------------------------------------------------------------------
@@ -356,7 +355,7 @@ export type Line = { role: Role; kind: Kind; text: string; block?: Block; pendin
  * `section` is what one press of "next" skips (Team.skip): a whole thinking block, a reply's paragraph, table or code
  * block, or one action line.
  */
-export type Utterance = { role: Role; kind: Kind; text: string; status: string; section?: string }
+export type Utterance = { role: Role; kind: Kind; text: string; status: string; section?: string; intro?: string }
 
 /** The head of the queue, with what waits behind it from the same person and section joined on, up to `most` characters. */
 export function takeUtterance(queue: Line[], most: number): Line | undefined {
@@ -399,6 +398,13 @@ export type TeamSettings = {
   pace: 'live' | 'all'
 }
 
+/**
+ * Live pace while Haiku sums speech up (the narrator on): lines wait to be summed up together and come out a few
+ * words each, so far more may wait before any is dropped.
+ */
+const SYNTH_BACKLOG_MAX = 60
+const SYNTH_BACKLOG_KEEP = 30
+
 /** The team in one session: who speaks, the board, what waits to be said. */
 export class Team {
   speaker: Role = 'planner'
@@ -437,6 +443,11 @@ export class Team {
   hush(): void {
     this.queue.length = 0
     this.blockRoles.clear()
+  }
+
+  /** The user's latest prompt: what the synthesizer judges salience against. */
+  get asked(): string {
+    return this.prompt
   }
 
   /** Who speaks the work now: the director's pick, or the planner while the director is off. */
@@ -548,8 +559,16 @@ export class Team {
     const line = takeUtterance(this.queue, most)
     if (!line) return undefined
     const cast = this.settings.cast
-    const text = this.settings.intros && !this.introduced.has(line.role) ? `${introFor(line.role, cast)} ${line.text}` : line.text
-    return { role: line.role, kind: line.kind, text, status: `🔊 ${cast[line.role].name} · ${this.taskOf(line.role) ?? line.role}`, ...(line.section ? { section: line.section } : {}) }
+    // The introduction stays apart: the synthesizer sums up the words, and the name goes in front of what it says.
+    const intro = this.settings.intros && !this.introduced.has(line.role) ? introFor(line.role, cast) : ''
+    return {
+      role: line.role,
+      kind: line.kind,
+      text: line.text,
+      status: `🔊 ${cast[line.role].name} · ${this.taskOf(line.role) ?? line.role}`,
+      ...(line.section ? { section: line.section } : {}),
+      ...(intro ? { intro } : {}),
+    }
   }
 
   /** An utterance is playing: its speaker has been introduced. */
@@ -573,7 +592,10 @@ export class Team {
   private push(line: Line): void {
     if (line.section !== undefined && this.skipped.has(line.section)) return
     this.queue.push(line)
-    if (this.settings.pace === 'live') trimBacklog(this.queue)
+    if (this.settings.pace === 'live') {
+      if (this.settings.narrator) trimBacklog(this.queue, SYNTH_BACKLOG_MAX, SYNTH_BACKLOG_KEEP)
+      else trimBacklog(this.queue)
+    }
     if (this.queue.length > QUEUE_MAX) this.queue.splice(0, this.queue.length - QUEUE_MAX)
   }
 }

@@ -10,9 +10,9 @@ your Mac: free, offline, no API key.
   up the first time, in the background: a Python environment and the model, about 350 MB in `~/.claude/think-aloud`
   (nothing needs installing first: uv, Python 3.12, the libraries and the model all come from GitHub, checked against their SHA-256, in about a minute; PyPI only if GitHub fails).
   The status line shows its steps.
-- Until Kokoro is ready, and whenever it is not running, the **Mac's own voice** (`say`) speaks instead, with a Mac
-  voice for each member of the team, so they still sound like the same people. A voice your Mac lacks falls back to
-  the system voice. `/speak engine say` keeps the Mac voice.
+- Only Kokoro speaks: until it is ready speech waits, and a line it fails to play is tried once more, then left
+  unsaid (the Mac voice used to step in and talk over it). `/speak engine say` uses the **Mac's own voice**
+  instead, with a Mac voice for each member of the team; a voice your Mac lacks falls back to the system voice.
 
 ## The team
 
@@ -37,18 +37,27 @@ Seven fixed people, one per kind of work, the same in every session:
 - **Tables and code** are not read cell by cell: another small Haiku call (the narrator) says a small table the way
   an analyst would tell a colleague (the takeaway first), a big one as its gist, and a code block in one sentence or
   not at all. If it is slow or off: "There's a table on screen.", and code stays silent.
-- The first time each person speaks in a session, they say who they are ("Sam here, on builds.").
-- The director and the narrator use your Claude Code session's own model access (Haiku, low effort, a few hundred
-  tokens a call). `/speak classifier off` and `/speak narrator off` turn them off.
+- The first time each person speaks in a session, they say who they are and their role ("Sam here, the ops
+  engineer, on builds and deploys.").
+- The reply block being spoken is lit in the transcript: an amber background over its rows while it plays.
+- **Nothing is read out word for word.** Thinking and replies are summed up by a third Haiku call (the synthesizer):
+  all that waits of one person's paragraph or thought at once, saying only what is salient and new (a finding, a
+  decision, a number, the idea of the method), as few words as the information needs. It sees the last few things said, so it does not
+  repeat them, and stays silent when there is nothing new. If it is slow or fails, the first sentence or so is said.
+- The director, the narrator and the synthesizer use your Claude Code session's own model access (Haiku, low effort,
+  a few hundred tokens a call). `/speak classifier off` turns the director off; `/speak narrator off` turns the
+  narrator and the synthesizer off, and speech is then read as written.
 
 Also:
 
 - Speech is cut into sentences as Claude writes them; markdown is cleaned so it sounds like speech (a path is its
   file name, a link is "a link").
-- In live pace, speech keeps up with Claude: when it falls behind, the action lines go first, then old thinking;
-  replies are always read in full.
-- Sending a new message or pressing Esc stops it at once.
-- **Next block**: `alt+→` (or the `⏭ next` row above the prompt while it speaks, or `/speak next`) skips the rest of
+- In live pace, speech keeps up with Claude: when it falls far behind, the action lines go first, then old thinking;
+  replies are never dropped.
+- Pressing Esc stops it at once. A new message does not: what is being said finishes, the old turn's waiting
+  thinking and tool lines go, and speech follows Claude's new response.
+- **Back**: `⌘←` (or `/speak back`) says the block before again, then the one that was playing, then carries on.
+- **Next block**: `⌘→` (or the `⏭ next` row above the prompt while it speaks, or `/speak next`) skips the rest of
   what is being said: the whole thought, the reply's paragraph, table or code block, or the tool line. What comes
   after plays at once.
 - Silent in headless `claude -p` runs and in subagents.
@@ -74,21 +83,21 @@ claude plugin install think-aloud --marketplace shashank42/claude-think-aloud
 In the desktop app: click + next to the prompt box, then Plugins, Add marketplace with
 `shashank42/claude-think-aloud`, then Add plugin.
 
-It is on as soon as it is installed; the Mac voice speaks while Kokoro sets itself up.
+It is on as soon as it is installed, and starts speaking once Kokoro has set itself up (about a minute, once).
 
-For the `alt+→` shortcut, add this to `~/.claude/keybindings.json` (create the file if it is not there; merge the
-entry if it is):
+For the `⌘→` / `⌘←` shortcut, add this to `~/.claude/keybindings.json` (create the file if it is not there; merge
+the entry if it is):
 
 ```json
 {
   "$schema": "https://www.schemastore.org/claude-code-keybindings.json",
-  "bindings": [{ "context": "Chat", "bindings": { "alt+right": "command:speak-next" } }]
+  "bindings": [{ "context": "Chat", "bindings": { "cmd+right": "command:speak-next", "cmd+left": "command:speak-back" } }]
 }
 ```
 
-`command:speak-next` runs think-aloud's silent `/speak-next`. On a Mac, alt is Option (⌥). It takes over ⌥→'s
-jump-a-word in the prompt. If your terminal sends ⌥→ as a word jump (`ESC f`: Terminal.app, or iTerm2's "Natural Text
-Editing" preset), bind `"alt+f"` the same way. Without a binding, click ⏭ or type `/speak next`.
+`command:speak-next` and `command:speak-back` run think-aloud's silent `/speak-next` and `/speak-back`. ⌥→ stays free for jumping a word in the prompt. Many
+terminals keep ⌘ for themselves and never pass it on; where ⌘→ does nothing, bind another key the same way (for
+example `"ctrl+right"`), click ⏭, or type `/speak next`.
 
 ## Use
 
@@ -97,7 +106,7 @@ Editing" preset), bind `"alt+f"` the same way. Without a binding, click ⏭ or t
 | `/speak` | Shows the current settings |
 | `/speak off` / `/speak on` | Turns it off or on (remembered across sessions) |
 | `/speak stop` | Stops what is being said now |
-| `/speak next` (`alt+→`) | Skips to the next block: the rest of this thought, paragraph, table or tool line goes |
+| `/speak next` (`⌘→`) | Skips to the next block: the rest of this thought, paragraph, table or tool line goes |
 | `/speak test` | Plays a sample line: Theo thinking, then Maya replying |
 | `/speak cast` | Lists the team, their voices, who speaks now and the task board |
 | `/speak cast <role> <voice>` | Gives a member a voice: a Kokoro name (`bf_emma`) or a Mac voice (`Moira`) |
@@ -106,7 +115,7 @@ Editing" preset), bind `"alt+f"` the same way. Without a binding, click ⏭ or t
 | `/speak actions off` / `on` | The short lines for tool calls |
 | `/speak intros off` / `on` | Each person saying who they are, once a session |
 | `/speak classifier off` / `on` | The director (off: Theo speaks all the thinking) |
-| `/speak narrator off` / `on` | The narrator for tables and code |
+| `/speak narrator off` / `on` | The narrator (tables, code) and the synthesizer (all else): off, speech is read as written |
 | `/speak thinking off` / `/speak replies off` | Read only one of the two |
 | `/speak rate 220` | Words per minute (120 to 400); thinking runs a little faster |
 | `/speak all` / `/speak live` | Read everything however far behind, or keep up with Claude (default) |
