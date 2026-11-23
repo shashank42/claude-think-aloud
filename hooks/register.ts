@@ -70,7 +70,7 @@ const KOKORO_VOICE = /^[a-z]{2}_[a-z]+$/i
 const DIRECTOR_TIMEOUT_MS = 3000
 const NARRATOR_TIMEOUT_MS = 4000
 /** The speech editor's limit: past it the line is said as written. */
-const SPEAKABLE_TIMEOUT_MS = 2500
+const SPEAKABLE_TIMEOUT_MS = 5000
 /** Tables and code blocks narrated ahead of being said, at most: a reply of twelve snippets made twelve calls at once. */
 const NARRATE_AHEAD = 2
 /**
@@ -123,6 +123,8 @@ const S = {
   narrating: new Map<Line, AbortController>(),
   /** Clears the status line once Kokoro's last utterance has played out. */
   statusTimer: null as { cancel: () => void } | null,
+  /** The speech editor this session (/speak shows it): lines reworded, left as written, or said raw (timeout, error). */
+  editor: { rewritten: 0, kept: 0, failed: 0 },
   /** The voices this Mac has (`say -v ?`), lowercased, full and short ("tara (english (india))", "tara"); null when unknown. */
   voices: null as Set<string> | null,
   /** The Kokoro engine in this session: its server's port once it is up. */
@@ -295,8 +297,11 @@ async function speakable($: EngineInterface, text: string): Promise<string> {
   if (!S.settings.narrator || !/[\p{L}\p{N}]/u.test(text)) return text
   try {
     const r = await $.model.complete({ model: 'haiku', effort: 'low', maxTokens: 400, timeoutMs: SPEAKABLE_TIMEOUT_MS, prompt: speakablePrompt(text) })
-    return (r.isAnswered && speakableOf(r.text, text)) || text
+    const said = r.isAnswered ? speakableOf(r.text, text) : ''
+    S.editor[!said ? 'failed' : said === text ? 'kept' : 'rewritten']++
+    return said || text
   } catch {
+    S.editor.failed++
     return text
   }
 }
@@ -880,7 +885,7 @@ export const register: Register = on => {
     }
     await save($)
     return {
-      text: `${note ? `${note} ` : ''}think-aloud is ${onOff(S.settings.on)}: ${teamNow()}; ${S.settings.rate} words a minute, ${S.settings.pace} pace. ${engineNow()}${S.interactive ? '' : ' (Not in this non-interactive session.)'}`,
+      text: `${note ? `${note} ` : ''}think-aloud is ${onOff(S.settings.on)}: ${teamNow()}; ${S.settings.rate} words a minute, ${S.settings.pace} pace. ${engineNow()} Speech editor: ${S.editor.rewritten} lines reworded, ${S.editor.kept} unchanged, ${S.editor.failed} said as written (Haiku slow or failed).${S.interactive ? '' : ' (Not in this non-interactive session.)'}`,
     }
   })
 }
