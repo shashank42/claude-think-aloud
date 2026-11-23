@@ -39,7 +39,8 @@ Seven fixed people, one per kind of work, the same in every session:
   not at all. If it is slow or off: "There's a table on screen.", and code stays silent.
 - The first time each person speaks in a session, they say who they are and their role ("Sam here, the ops
   engineer, on builds and deploys.").
-- The reply block being spoken is lit in the transcript: an amber background over its rows while it plays.
+- What is being spoken is lit in the transcript, an amber background over its rows while it plays: the reply block,
+  or, for a thought, the tool rows right under its "Thought for" row (that row itself cannot be drawn on by a plugin).
 - **Nothing is read out word for word.** Thinking and replies are summed up by a third Haiku call (the synthesizer):
   all that waits of one person's paragraph or thought at once, saying only what is salient and new (a finding, a
   decision, a number, the idea of the method), as few words as the information needs. It sees the last few things said, so it does not

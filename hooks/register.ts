@@ -103,8 +103,12 @@ const RATE_MAX = 400
 const NEXT_ACTION = 'diff:back'
 /** Whether a line is playing: the ⏭ row above the prompt shows only then. */
 const SPEAKING = atom({ plugin: 'think-aloud', key: 'speaking' } as const, false)
-/** The start of the reply text being spoken now ('' for none): the transcript block holding it is lit (owner, 23 Nov 2026). */
-const LIT = atom({ plugin: 'think-aloud', key: 'lit' } as const, '')
+/**
+ * What is lit in the transcript while it is spoken (owner, 23 Nov 2026): a reply by the start of its text (`probe`), a
+ * thought by its step (`step`), whose tool rows are lit, as the "Thought for" row itself cannot be drawn on.
+ */
+const NO_LIT = { probe: '', step: '' }
+const LIT = atom({ plugin: 'think-aloud', key: 'lit' } as const, NO_LIT)
 /** The lit block's background: amber, as if translucent over a dark terminal. */
 const LIT_COLOR = '#4b3e18'
 const USAGE =
@@ -211,6 +215,12 @@ async function save($: EngineInterface): Promise<void> {
   await $.store.set(STORE_KEY, S.settings)
 }
 
+/** A drawing with the amber under its rows. */
+function lit($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], drawn: RenderElement): RenderElement {
+  const { Box } = $.ui.resolve(e)
+  return h(Box, { flexDirection: 'column', backgroundColor: LIT_COLOR }, drawn) as RenderElement
+}
+
 /** What was said lately, "Name: words": the synthesizer's and the narrator's "said recently". */
 function recent(): string[] {
   return S.played.map(u => `${S.settings.cast[u.role].name}: ${u.text}`)
@@ -267,7 +277,7 @@ function idle($: EngineInterface): void {
   S.current = null
   $.ui.status(undefined)
   void update($, SPEAKING, () => false).catch(() => undefined)
-  void update($, LIT, () => '').catch(() => undefined)
+  void update($, LIT, () => NO_LIT).catch(() => undefined)
 }
 
 /**
@@ -408,8 +418,9 @@ function shown($: EngineInterface, u: Utterance, source = ''): void {
   S.played.push(u)
   if (S.played.length > RECENT_KEPT) S.played.shift()
   void update($, SPEAKING, () => true).catch(() => undefined)
-  // The reply's words as written (not as summed up), so the block on screen that holds them can be found and lit.
-  const lit = u.kind === 'reply' ? source.slice(0, 60) : ''
+  // A reply by its words as written (not as summed up); a thought by its step (its section is turnId:index:block).
+  const section = u.section ?? ''
+  const lit = u.kind === 'reply' ? { probe: source.slice(0, 60), step: '' } : u.kind === 'thinking' ? { probe: '', step: section.slice(0, section.lastIndexOf(':')) } : NO_LIT
   void update($, LIT, () => lit).catch(() => undefined)
 }
 
@@ -830,13 +841,20 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // The reply block being spoken is lit in the transcript, amber over its rows, while it plays.
+  // What is being spoken is lit in the transcript, amber over its rows: the reply block, or the tool rows of the
+  // thought's step (right under its "Thought for" row).
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next_) => {
-    const lit = S.settings.on ? await read($, LIT) : ''
+    const { probe } = S.settings.on ? await read($, LIT) : NO_LIT
     const drawn = await next_(e)
-    if (!lit || e.props.onScreen === null || !e.props.text.split('\n').map(spoken).join(' ').includes(lit)) return drawn
-    const { Box } = $.ui.resolve(e)
-    return h(Box, { flexDirection: 'column', backgroundColor: LIT_COLOR }, drawn) as RenderElement
+    if (!probe || e.props.onScreen === null || !e.props.text.split('\n').map(spoken).join(' ').includes(probe)) return drawn
+    return lit($, e, drawn)
+  })
+
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next_) => {
+    const { step } = S.settings.on ? await read($, LIT) : NO_LIT
+    const drawn = await next_(e)
+    if (!step || e.props.onScreen === null || !S.team.stepTools.get(step)?.includes(e.props.tool_use_id)) return drawn
+    return lit($, e, drawn)
   })
 
   on('turn.complete', async ($, e, next) => {
