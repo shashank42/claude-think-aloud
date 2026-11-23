@@ -106,7 +106,7 @@ const NEXT_ACTION = 'diff:back'
  * thought's own "Thought for" row cannot be drawn on, and rows already written to the scrollback are not redrawn, so the
  * band is where a thought is seen (owner, 23 Nov 2026).
  */
-const SAYING = atom({ plugin: 'think-aloud', key: 'saying' } as const, { on: false, thought: '' })
+const SAYING = atom({ plugin: 'think-aloud', key: 'saying' } as const, { playing: false, thought: '' })
 /** The start of the reply text being spoken now ('' for none): the transcript block holding it is lit too. */
 const LIT = atom({ plugin: 'think-aloud', key: 'lit' } as const, '')
 /** The step of the thought being spoken ('' for none): its tool rows, under its "Thought for" row, are lit. */
@@ -272,7 +272,7 @@ function idle($: EngineInterface): void {
   S.statusTimer = null
   S.current = null
   $.ui.status(undefined)
-  void update($, SAYING, () => ({ on: false, thought: '' })).catch(() => undefined)
+  void update($, SAYING, () => ({ playing: false, thought: '' })).catch(() => undefined)
   void update($, LIT, () => '').catch(() => undefined)
   void update($, STEP, () => '').catch(() => undefined)
 }
@@ -416,7 +416,7 @@ function shown($: EngineInterface, u: Utterance, source = ''): void {
   if (S.played.length > RECENT_KEPT) S.played.shift()
   // The band shows a thought only: a reply is lit where it is on screen (owner, 23 Nov 2026).
   const thought = u.kind === 'thinking' ? `${S.settings.cast[u.role].name}: ${u.text}` : ''
-  void update($, SAYING, () => ({ on: true, thought })).catch(() => undefined)
+  void update($, SAYING, () => ({ playing: true, thought })).catch(() => undefined)
   // The reply's words as written (not as summed up), so the block on screen that holds them can be found and lit.
   const lit = u.kind === 'reply' ? source.slice(0, 60) : ''
   void update($, LIT, () => lit).catch(() => undefined)
@@ -875,8 +875,8 @@ export const register: Register = on => {
 
   // While a line plays: an amber band above the prompt with who is saying what, and ⏮ / ⏭ (a click or ⇧← / ⇧→).
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next_) => {
-    const { on, thought } = !e.props.hasSurvey && S.settings.on ? await read($, SAYING) : { on: false, thought: '' }
-    if (!on) return next_(e)
+    const { playing, thought } = !e.props.hasSurvey && S.settings.on ? await read($, SAYING) : { playing: false, thought: '' }
+    if (!playing) return next_(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     // h() is what JSX compiles to; a Box always makes an element.
     return h(
