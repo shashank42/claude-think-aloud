@@ -109,6 +109,8 @@ const NEXT_ACTION = 'diff:back'
 const SAYING = atom({ plugin: 'think-aloud', key: 'saying' } as const, '')
 /** The start of the reply text being spoken now ('' for none): the transcript block holding it is lit too. */
 const LIT = atom({ plugin: 'think-aloud', key: 'lit' } as const, '')
+/** The step of the thought being spoken ('' for none): its tool rows, under its "Thought for" row, are lit. */
+const STEP = atom({ plugin: 'think-aloud', key: 'step' } as const, '')
 /** Amber, as if translucent over a dark terminal. */
 const LIT_COLOR = '#4b3e18'
 const USAGE =
@@ -272,6 +274,7 @@ function idle($: EngineInterface): void {
   $.ui.status(undefined)
   void update($, SAYING, () => '').catch(() => undefined)
   void update($, LIT, () => '').catch(() => undefined)
+  void update($, STEP, () => '').catch(() => undefined)
 }
 
 /**
@@ -415,6 +418,9 @@ function shown($: EngineInterface, u: Utterance, source = ''): void {
   // The reply's words as written (not as summed up), so the block on screen that holds them can be found and lit.
   const lit = u.kind === 'reply' ? source.slice(0, 60) : ''
   void update($, LIT, () => lit).catch(() => undefined)
+  const section = u.section ?? ''
+  const step = u.kind === 'thinking' ? section.slice(0, section.lastIndexOf(':')) : ''
+  void update($, STEP, () => step).catch(() => undefined)
 }
 
 /** About how long an utterance plays, at `rate` words a minute. */
@@ -839,6 +845,19 @@ export const register: Register = on => {
     const probe = S.settings.on ? await read($, LIT) : ''
     const drawn = await next_(e)
     if (!probe || e.props.onScreen === null || !e.props.text.split('\n').map(spoken).join(' ').includes(probe)) return drawn
+    const { Box } = $.ui.resolve(e)
+    return h(Box, { flexDirection: 'column', backgroundColor: LIT_COLOR }, drawn) as RenderElement
+  })
+
+  // The tool rows of the thought being spoken, lit amber (they sit right under its "Thought for" row). Only where the
+  // transcript is redrawn: the fullscreen layout. On the main screen (tmux, CLAUDE_CODE_NO_FLICKER=0) finished rows are
+  // in the scrollback and stay as they were (seen 23 Nov 2026), and the band above the prompt shows the thought.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next_) => {
+    const step = S.settings.on ? await read($, STEP) : ''
+    const drawn = await next_(e)
+    if (!step) return drawn
+    const hit = S.team.stepTools.get(step)?.includes(e.props.tool_use_id) ?? false
+    if (!hit || e.props.onScreen === null) return drawn
     const { Box } = $.ui.resolve(e)
     return h(Box, { flexDirection: 'column', backgroundColor: LIT_COLOR }, drawn) as RenderElement
   })

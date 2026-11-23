@@ -445,6 +445,14 @@ export class Team {
     this.blockRoles.clear()
   }
 
+  /** A step's tool calls, by its turnId:index (the newest few steps): the rows lit while its thinking is spoken. */
+  readonly stepTools = new Map<string, string[]>()
+
+  toolOf(step: string, id: string): void {
+    this.stepTools.set(step, [...(this.stepTools.get(step) ?? []), id])
+    if (this.stepTools.size > 20) this.stepTools.delete(this.stepTools.keys().next().value!)
+  }
+
   /** The user's latest prompt: what the synthesizer judges salience against. */
   get asked(): string {
     return this.prompt
@@ -603,7 +611,7 @@ export class Team {
 /** The pieces of a turn.step chunk the reader uses (TurnStepChunk's, structurally: a plain object will do). */
 export type StepChunk =
   | { kind: 'thinking' | 'text'; index: number; text: string }
-  | { kind: 'tool'; index: number; name: string }
+  | { kind: 'tool'; index: number; name: string; id?: string }
   | { kind: 'input'; index: number; json: string }
   | { kind: 'stop' }
   | { kind: 'engine' }
@@ -638,6 +646,7 @@ export class StepReader {
     } else if (c.kind === 'tool') {
       this.close()
       this.call = { index: c.index, name: c.name, json: '' }
+      if (c.id) this.team.toolOf(this.step, c.id)
     } else if (c.kind === 'input') {
       if (this.call?.index === c.index && this.call.json.length < TOOL_JSON_MAX) this.call.json += c.json
     } else if (c.kind === 'stop') this.close()

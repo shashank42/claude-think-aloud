@@ -7,6 +7,6 @@ export type Lit = string
 
 declare module 'claude-code' {
   interface PluginState {
-    'think-aloud': { saying: Saying; lit: Lit }
+    'think-aloud': { saying: Saying; lit: Lit; step: Lit }
   }
 }
