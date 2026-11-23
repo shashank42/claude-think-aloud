@@ -22,7 +22,7 @@ import { fallbackNarration, gistOf, narrationOf, narratorPrompt, spoken, synthOf
  *
  * In `live` pace (the default) speech keeps up with the model: when more than BACKLOG_MAX lines wait, the action
  * lines go first, then the oldest thinking (the reply's never). Sending a message, pressing Esc, or `/speak stop`
- * silences it at once. "Next" (⌥⇧→, the ⏭ above the prompt, or `/speak next`) skips the rest of what is being said:
+ * silences it at once. "Next" (⇧→, the ⏭ above the prompt, or `/speak next`) skips the rest of what is being said:
  * the whole thought, the reply's paragraph, table or code block, or the action line; what follows plays at once.
  * `/speak` shows and changes the settings, kept across sessions.
  */
@@ -251,7 +251,7 @@ function hush($: EngineInterface): void {
 }
 
 /**
- * "Back" (⌥⇧←, the ⏮ above the prompt): the block before the one playing is said again, then that one from its start, then the rest as before.
+ * "Back" (⇧←, the ⏮ above the prompt): the block before the one playing is said again, then that one from its start, then the rest as before.
  * What the next run had taken to prepare goes back too. The speaker's name, or undefined when nothing was said yet.
  */
 function back($: EngineInterface): string | undefined {
@@ -753,7 +753,7 @@ export const register: Register = on => {
       // no /speak this session; speech still works
     }
     try {
-      // What the keybindings run (keybindings.json, Chat: "shift+alt+right": "command:speak-next", "shift+alt+left": "command:speak-back"); silent, no output row.
+      // What the keybindings run (keybindings.json, Chat: "shift+right": "command:speak-next", "shift+left": "command:speak-back"); silent, no output row.
       await $.command.register({ name: 'speak-next', description: 'think-aloud: skip to the next block (bind a key to command:speak-next)' })
       await $.command.register({ name: 'speak-back', description: 'think-aloud: back to the block before (bind a key to command:speak-back)' })
     } catch {
@@ -877,7 +877,7 @@ export const register: Register = on => {
       h(Button, { key: 'think-aloud-back', label: '⏮ back', plain: true, onPress: () => void back($) }),
       h(Text, null, '  '),
       h(Button, { key: 'think-aloud-next', label: '⏭ next', action: NEXT_ACTION, plain: true, onPress: () => void next($) }),
-      h(Text, { dimColor: true }, '  ⌥⇧← back · ⌥⇧→ next block'),
+      h(Text, { dimColor: true }, '  ⇧← back · ⇧→ next block'),
     ) as RenderElement
   })
 

@@ -57,8 +57,8 @@ Also:
   replies are never dropped.
 - Pressing Esc stops it at once. A new message does not: what is being said finishes, the old turn's waiting
   thinking and tool lines go, and speech follows Claude's new response.
-- **Back**: `⌥⇧←` (or the `⏮ back` button above the prompt, or `/speak back`) says the block before again, then the one that was playing, then carries on.
-- **Next block**: `⌥⇧→` (or the `⏭ next` row above the prompt while it speaks, or `/speak next`) skips the rest of
+- **Back**: `⇧←` (or the `⏮ back` button above the prompt, or `/speak back`) says the block before again, then the one that was playing, then carries on.
+- **Next block**: `⇧→` (or the `⏭ next` row above the prompt while it speaks, or `/speak next`) skips the rest of
   what is being said: the whole thought, the reply's paragraph, table or code block, or the tool line. What comes
   after plays at once.
 - Silent in headless `claude -p` runs and in subagents.
@@ -86,18 +86,17 @@ In the desktop app: click + next to the prompt box, then Plugins, Add marketplac
 
 It is on as soon as it is installed, and starts speaking once Kokoro has set itself up (about a minute, once).
 
-For the `⌥⇧→` / `⌥⇧←` shortcut (Option+Shift+arrow), add this to `~/.claude/keybindings.json` (create the file if it is not there; merge
+For the `⇧→` / `⇧←` shortcut (Shift+arrow), add this to `~/.claude/keybindings.json` (create the file if it is not there; merge
 the entry if it is):
 
 ```json
 {
   "$schema": "https://www.schemastore.org/claude-code-keybindings.json",
-  "bindings": [{ "context": "Chat", "bindings": { "shift+alt+right": "command:speak-next", "shift+alt+left": "command:speak-back" } }]
+  "bindings": [{ "context": "Chat", "bindings": { "shift+right": "command:speak-next", "shift+left": "command:speak-back" } }]
 }
 ```
 
-`command:speak-next` and `command:speak-back` run think-aloud's silent `/speak-next` and `/speak-back`. Plain ⌥→ / ⌥← stay free for jumping a word in the
-prompt. ⌘ is no good: most terminals keep it and never pass it on. Where ⌥⇧→ does nothing, click ⏮ / ⏭ or type
+`command:speak-next` and `command:speak-back` run think-aloud's silent `/speak-next` and `/speak-back`. ⌥→ / ⌥← stay free for jumping a word in the prompt. ⌘ is no good: most terminals keep it and never pass it on. Where ⇧→ does nothing, click ⏮ / ⏭ or type
 `/speak back` / `/speak next`.
 
 ## Use
@@ -107,7 +106,7 @@ prompt. ⌘ is no good: most terminals keep it and never pass it on. Where ⌥�
 | `/speak` | Shows the current settings |
 | `/speak off` / `/speak on` | Turns it off or on (remembered across sessions) |
 | `/speak stop` | Stops what is being said now |
-| `/speak next` (`⌥⇧→`) | Skips to the next block: the rest of this thought, paragraph, table or tool line goes |
+| `/speak next` (`⇧→`) | Skips to the next block: the rest of this thought, paragraph, table or tool line goes |
 | `/speak test` | Plays a sample line: Theo thinking, then Maya replying |
 | `/speak cast` | Lists the team, their voices, who speaks now and the task board |
 | `/speak cast <role> <voice>` | Gives a member a voice: a Kokoro name (`bf_emma`) or a Mac voice (`Moira`) |
