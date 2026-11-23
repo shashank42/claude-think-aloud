@@ -1,12 +1,12 @@
 /** think-aloud's state contract: what its hooks keep in $.state. */
 
-/** A line is playing: the ⏭ row above the prompt shows. */
-export type Speaking = boolean
-/** What is lit while spoken: a reply block by the start of its text, a thought's tool rows by its step ('' for none). */
-export type Lit = { probe: string; step: string }
+/** What is being said now, "Name: words" ('' when quiet): the amber band above the prompt. */
+export type Saying = string
+/** The start of the reply text being spoken now, '' for none: the transcript block holding it is lit. */
+export type Lit = string
 
 declare module 'claude-code' {
   interface PluginState {
-    'think-aloud': { speaking: Speaking; lit: Lit }
+    'think-aloud': { saying: Saying; lit: Lit }
   }
 }
