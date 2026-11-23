@@ -70,7 +70,7 @@ const KOKORO_VOICE = /^[a-z]{2}_[a-z]+$/i
 const DIRECTOR_TIMEOUT_MS = 3000
 const NARRATOR_TIMEOUT_MS = 4000
 /** The speech editor's limit: past it the line is said as written. */
-const SPEAKABLE_TIMEOUT_MS = 5000
+const SPEAKABLE_TIMEOUT_MS = 8000
 /** Tables and code blocks narrated ahead of being said, at most: a reply of twelve snippets made twelve calls at once. */
 const NARRATE_AHEAD = 2
 /**
