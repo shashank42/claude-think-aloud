@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.shashank42.think-aloud.buds</string>
+  <key>CFBundleName</key>
+  <string>think-aloud</string>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>think-aloud reads your earbud taps (double tap to talk, triple tap to skip or go back).</string>
+</dict>
+</plist>

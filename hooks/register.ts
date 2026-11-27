@@ -1,6 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import { boardText, defaultCast, mergeCast, ROLES, roleOf, StepReader, Team, TEAM, trimBacklog, WORKERS, type Line, type Role, type TeamSettings, type Utterance } from './cast'
+import { budsNow, budsSetup, budsStart, budsStop, budsTarget, mics, setBudsMic, type BudsHooks, type Mic } from './buds'
 import { fallbackNarration, gistOf, narrationOf, narratorPrompt, spoken, synthOf, synthPrompt } from './speech'
 
 /**
@@ -34,6 +35,10 @@ export type Settings = TeamSettings & {
   engine: 'kokoro' | 'say'
   /** The reply's words per minute; thinking and actions run THINKING_FASTER of it. */
   rate: number
+  /** Earbud taps (hooks/buds.ts): double tap talks, triple tap right/left next/back. */
+  buds: boolean
+  /** The mic that records while talking by the buds: "default" (macOS's input) or an input's name (/speak mic). */
+  budsMic: string
 }
 
 export const DEFAULTS: Settings = {
@@ -46,6 +51,8 @@ export const DEFAULTS: Settings = {
   director: true,
   narrator: true,
   rate: 200,
+  buds: true,
+  budsMic: 'default',
   pace: 'live',
   cast: defaultCast(),
 }
@@ -114,7 +121,7 @@ const STEP = atom({ plugin: 'think-aloud', key: 'step' } as const, '')
 /** Amber, as if translucent over a dark terminal. */
 const LIT_COLOR = '#4b3e18'
 const USAGE =
-  '/speak on | off | stop | next | back | cast | cast <role> <voice> | name <role> <name> | actions on|off | intros on|off | classifier on|off | narrator on|off | thinking on|off | replies on|off | rate 200 | voice thinking|reply <name> | voices | engine kokoro|say | setup | live | all | test'
+  '/speak on | off | stop | next | back | cast | cast <role> <voice> | name <role> <name> | actions on|off | intros on|off | classifier on|off | narrator on|off | thinking on|off | replies on|off | rate 200 | voice thinking|reply <name> | voices | engine kokoro|say | setup | buds on|off|setup | mic | live | all | test'
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -209,6 +216,9 @@ async function load($: EngineInterface): Promise<void> {
   // An uppercase "/speak Live" once stored pace "Live", which is neither.
   if (settings.pace !== 'live' && settings.pace !== 'all') settings.pace = DEFAULTS.pace
   if (settings.engine !== 'kokoro' && settings.engine !== 'say') settings.engine = DEFAULTS.engine
+  // 0.7.0's first cut stored "mac" / "buds", never device names.
+  if (settings.budsMic === 'mac' || settings.budsMic === 'buds') settings.budsMic = DEFAULTS.budsMic
+  setBudsMic(settings.budsMic)
   S.settings = settings
   S.team.settings = settings
 }
@@ -412,6 +422,8 @@ function shown($: EngineInterface, u: Utterance, source = ''): void {
   S.preparing = null
   $.ui.status(u.status)
   S.team.spoke(u)
+  // The buds talk to the session that spoke last.
+  void budsTarget($).catch(() => undefined)
   S.played.push(u)
   if (S.played.length > RECENT_KEPT) S.played.shift()
   // The band shows a thought only: a reply is lit where it is on screen (owner, 23 Nov 2026).
@@ -691,6 +703,24 @@ async function setVoice($: EngineInterface, role: Role, voice: string): Promise<
   return undefined
 }
 
+/** /speak mic: Default and each input, numbered, the chosen one ticked. */
+function micList(all: Mic[]): string {
+  const why: Record<string, string> = {
+    bluetooth: ' (Bluetooth: the buds go into call mode while it records, and a send tap calls Siri; send from the keyboard)',
+    'builtin-off': ' (lid closed: hears nothing)',
+  }
+  const now = all.find(m => m.isDefault)?.name ?? 'none'
+  const tick = (on: boolean) => (on ? '✓' : ' ')
+  const rows = [`${tick(S.settings.budsMic === 'default')} 0. Default (macOS's input, now ${now})`]
+  all.forEach((m, i) => rows.push(`${tick(S.settings.budsMic === m.name)} ${i + 1}. ${m.name}${why[m.kind] ?? ''}`))
+  return `The mic that records while you talk by the buds (the input switches back after):\n${rows.join('\n')}\n/speak mic <number or name> chooses.`
+}
+
+/** What the buds' taps do here: the same as ⇧→, ⇧← and Esc. */
+function budsHooks($: EngineInterface): BudsHooks {
+  return { hush: () => hush($), next: () => next($), back: () => back($) }
+}
+
 function onOff(v: boolean): string {
   return v ? 'on' : 'off'
 }
@@ -742,6 +772,7 @@ export const register: Register = on => {
         void loadVoices($)
         if (S.settings.engine === 'kokoro') void startKokoro($)
       }
+      if (S.interactive && S.settings.buds) void budsStart($, budsHooks($))
     } catch {
       // the defaults stand
     }
@@ -776,6 +807,7 @@ export const register: Register = on => {
   // The user's prompt: the director's first look at the turn, in the background.
   on('turn.start', async ($, e, next) => {
     try {
+      if (S.interactive && e.agentId === undefined) void budsTarget($).catch(() => undefined)
       if (S.settings.on && S.interactive && e.agentId === undefined && e.text.trim()) {
         S.team.begin(e.text)
         void direct($, 'prompt')
@@ -1006,6 +1038,35 @@ export const register: Register = on => {
         void startKokoro($, true)
         note = 'Checking the Kokoro voice and rebuilding what is broken, in the background; the status line shows its steps.'
         break
+      case 'buds': {
+        const [sub = ''] = rest.map(w => w.toLowerCase())
+        if (sub === 'on' || sub === 'off') {
+          S.settings.buds = sub === 'on'
+          if (S.settings.buds && S.interactive) void budsStart($, budsHooks($))
+          if (!S.settings.buds) budsStop()
+          note = sub === 'on' ? 'Listening to the buds.' : 'Buds ignored.'
+          break
+        }
+        if (sub === 'setup') return { text: await budsSetup($) }
+        if (sub === '' || sub === 'status') return { text: `${budsNow(S.settings.buds)} Double tap: talk, double tap again: send. Triple tap right: next block, left: back. Left single tap: play/pause. /speak buds on|off|setup; /speak mic picks the mic.` }
+        return { text: 'Use /speak buds on | off | setup' }
+      }
+      case 'mic': {
+        const all = await mics($)
+        if (!arg) return { text: micList(all) }
+        const n = Number(arg)
+        const pick =
+          arg.toLowerCase() === 'default' || n === 0
+            ? 'default'
+            : Number.isInteger(n)
+              ? all[n - 1]?.name
+              : all.find(m => m.name.toLowerCase().includes(arg.toLowerCase()))?.name
+        if (!pick) return { text: `No mic "${arg}".\n${micList(all)}` }
+        S.settings.budsMic = pick
+        setBudsMic(pick)
+        note = `Talking by the buds records from ${pick === 'default' ? 'the default mic' : pick}.`
+        break
+      }
       case 'live':
       case 'all':
         S.settings.pace = word

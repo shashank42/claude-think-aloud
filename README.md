@@ -123,9 +123,37 @@ the entry if it is):
 | `/speak all` / `/speak live` | Read everything however far behind, or keep up with Claude (default) |
 | `/speak engine kokoro` / `say` | The Kokoro voice (default) or the Mac voice |
 | `/speak setup` | Checks the Kokoro voice and rebuilds what is broken |
+| `/speak buds` / `buds setup` / `mic` | Earbud taps (below): the state, writing the gestures onto the buds, the mic that records |
 | `/speak voice thinking <name>` / `voice reply <name>` | The planner's or the lead's voice (older form of `/speak cast`) |
 
 Roles: `lead`, `planner`, `app`, `backend`, `data`, `ops`, `qa` (or the member's name). Nicer Mac voices (Premium /
 Enhanced) are a free download in System Settings › Accessibility › Spoken Content › System voice › Manage Voices.
 
 The design of the team is in `docs/cast.md`.
+
+## Earbuds
+
+OPPO, OnePlus and realme buds (tested on OnePlus Nord Buds 3) work as a remote, with no app on the phone or the Mac:
+
+| Gesture | Does |
+| --- | --- |
+| Double tap, either bud | Talk: Claude Code's own voice dictation starts. Double tap again to send |
+| Triple tap, right | Next block (as `⇧→`) |
+| Triple tap, left | Back (as `⇧←`) |
+| Single tap, left | Play/pause for videos and music |
+
+- **Which session.** The one that spoke last, or that you typed to last. Every open session listens, and that one acts.
+- **Dictation mode.** It follows your `/voice` setting. In `hold` mode the mod holds Space down until the second double
+  tap, then presses Enter. In `tap` mode it taps Space twice.
+- **Microphone.** `/speak mic` lists Default (macOS's input) and every mic connected; `/speak mic 2` picks one, used
+  only while you talk. A Bluetooth mic, the buds' own included, puts the buds in call mode, where a tap calls Siri
+  instead of reporting: then send from the keyboard.
+- **Media.** The buds send the Mac's player a "play" with every gesture. After a double or triple tap the mod pauses the
+  player again, so a video never starts by itself, and talking pauses it.
+- **Setup.** `/speak buds setup` writes the gesture map onto the buds. The helper `buds/buds.swift` builds on first use
+  and needs Xcode's command line tools. It reads the taps over Bluetooth LE and types into the session's own terminal.
+- **Credit.** The protocol is from [buds-control](https://github.com/junedkhatri31/buds-control) (MIT): event `0xF1`
+  carries the side and the gesture.
+
+`/speak buds` shows the state; `/speak buds off` / `on` switches it off or on.
+
