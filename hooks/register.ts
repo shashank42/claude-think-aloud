@@ -134,6 +134,8 @@ const S = {
   skippedChild: null as AsyncGenerator<unknown, unknown> | null,
   /** Bumped by every hush: a run of an earlier epoch stops at its next utterance. */
   epoch: 0,
+  /** Held while the person talks by the buds (Kokoro's playback waits where it is). */
+  paused: false,
   /** The director's call in flight, if any: one at a time, and a new prompt's replaces it. */
   directing: null as AbortController | null,
   /** The narrator's calls in flight, by the line they are for: a hush cuts them all, a dropped line its own. */
@@ -268,6 +270,29 @@ function back($: EngineInterface): string | undefined {
   S.team.queue.unshift(...lines)
   play($)
   return S.settings.cast[again[0]!.role].name
+}
+
+/**
+ * The person is talking (buds): Kokoro holds what plays where it is and carries on after; the Mac voice cannot be
+ * held, so it is stopped instead.
+ */
+function pause($: EngineInterface): void {
+  if (S.settings.engine !== 'kokoro') return hush($)
+  S.paused = true
+  if (S.kokoro.port !== null) void $.http.fetch(`http://127.0.0.1:${S.kokoro.port}/pause`, { method: 'POST' }).catch(() => undefined)
+}
+
+function resume($: EngineInterface): void {
+  S.paused = false
+  if (S.kokoro.port !== null) void $.http.fetch(`http://127.0.0.1:${S.kokoro.port}/resume`, { method: 'POST' }).catch(() => undefined)
+}
+
+/** Sleeps `ms` of time not paused: a pause lasts as long as the person talks, and is no stall. */
+async function sleepUnpaused($: EngineInterface, ms: number, signal: AbortSignal): Promise<void> {
+  for (let left = ms; left > 0; ) {
+    await $.clock.sleep(1000, { signal })
+    if (!S.paused) left -= 1000
+  }
 }
 
 /** Nothing is heard any more: the status line and the ⏭ row go. */
@@ -558,7 +583,7 @@ async function kokoroSpeak($: EngineInterface, text: string, voice: string, spee
         body: JSON.stringify({ text, voice, speed, epoch, section }),
       }),
       // A sleep cut short for any other reason leaves the fetch to decide, as before the timeout.
-      $.clock.sleep(KOKORO_TIMEOUT_MS, { signal: timer.signal }).then(
+      sleepUnpaused($, KOKORO_TIMEOUT_MS, timer.signal).then(
         () => null,
         () => new Promise<never>(() => undefined),
       ),
@@ -656,6 +681,8 @@ async function serveKokoro($: EngineInterface): Promise<void> {
       if (port) {
         S.kokoro.port = Number(port[1])
         S.kokoro.state = 'ready'
+        // A server that started while the person talks holds too.
+        if (S.paused) void $.http.fetch(`http://127.0.0.1:${S.kokoro.port}/pause`, { method: 'POST' }).catch(() => undefined)
         const health = await $.http.fetch(`http://127.0.0.1:${S.kokoro.port}/health`).catch(() => null)
         try {
           S.kokoro.voices = health?.ok ? ((JSON.parse(health.text) as { voices?: string[] }).voices ?? []) : []
@@ -710,9 +737,9 @@ function micList(all: Mic[]): string {
   return `The mic that records while you talk by the buds (the input switches back after):\n${rows.join('\n')}\n/speak mic <number or name> chooses.`
 }
 
-/** What the buds' taps do here: the same as ⇧→, ⇧← and Esc. */
+/** What the buds' taps do here: ⇧→, ⇧←, and holding speech while the person talks. */
 function budsHooks($: EngineInterface): BudsHooks {
-  return { hush: () => hush($), next: () => next($), back: () => back($) }
+  return { pause: () => pause($), resume: () => resume($), next: () => next($), back: () => back($) }
 }
 
 function onOff(v: boolean): string {
@@ -1042,7 +1069,7 @@ export const register: Register = on => {
           break
         }
         if (sub === 'setup') return { text: await budsSetup($) }
-        if (sub === '' || sub === 'status') return { text: `${budsNow(S.settings.buds)} Double tap: talk, double tap again: send. Triple tap right: next block, left: back. Left single tap: play/pause. /speak buds on|off|setup; /speak mic picks the mic.` }
+        if (sub === '' || sub === 'status') return { text: `${budsNow(S.settings.buds)} Tap left: listen / stop (adds to the box, never sends). Tap right: send. Triple tap right: next block, left: back. Double tap left: play/pause. /speak buds on|off|setup; /speak mic picks the mic.` }
         return { text: 'Use /speak buds on | off | setup' }
       }
       case 'mic': {

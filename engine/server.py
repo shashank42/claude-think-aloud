@@ -11,6 +11,8 @@ prints as "PORT <n>" once the model is loaded):
   POST /stop {"epoch"}                    drops what waits and cuts what plays, of every epoch before this one
   POST /skip {"section"}                  "next": cuts what plays of that section and drops what of it waits or
                                           is still being synthesised; the next utterance plays at once
+  POST /pause, POST /resume               holds playback where it is (the person is talking) and carries on from
+                                          there; what waits keeps waiting, and the stall timer does not run
   GET  /health                            {"ok": true, "voices": [...]}
 
 The epoch is the mod's own count of its hushes: a /stop and the /speak after it can arrive in either order, and the
@@ -154,6 +156,9 @@ class Player:
         self.current: "Item | None" = None
         # Sections skipped lately: an utterance of one still being synthesised is dropped when it is put.
         self.skipped: "collections.deque[str]" = collections.deque(maxlen=64)
+        # Set while playing may go on; cleared by /pause.
+        self.resumed = threading.Event()
+        self.resumed.set()
         threading.Thread(target=self._run, daemon=True).start()
 
     def skip(self, section: str) -> None:
@@ -195,6 +200,13 @@ class Player:
             self.items.put(item)
             return True
 
+    def hold(self, item: Item) -> bool:
+        """Waits while paused; whether the item is still wanted after (a stop or a skip may come meanwhile)."""
+        while not self.resumed.wait(0.5):
+            if item.epoch != self.epoch or item.skipped:
+                return False
+        return item.epoch == self.epoch and not item.skipped
+
     def _run(self) -> None:
         stream = None
         device = None  # the Mac's output device the stream was opened on
@@ -215,12 +227,20 @@ class Player:
                 if stream is None:
                     device = default_output()
                     stream = open_stream()
+                if not self.hold(item):
+                    continue
                 with self.lock:
                     self.current = item
                 item.played = True
                 item.started.set()
                 cut = False
                 for n, i in enumerate(range(0, len(item.audio), BLOCK)):
+                    if not self.resumed.is_set():
+                        # Paused: what the device holds stops at once, and the rest plays from here on resume.
+                        stream = close(stream, abort=True)
+                        if self.hold(item):
+                            device = default_output()
+                            stream = open_stream()
                     if item.epoch != self.epoch or item.skipped:
                         cut = True
                         break
@@ -293,6 +313,10 @@ class Handler(BaseHTTPRequestHandler):
                 player.skip(section)
             self._send(200, {"ok": True})
             return
+        if self.path in ("/pause", "/resume"):
+            (player.resumed.clear if self.path == "/pause" else player.resumed.set)()
+            self._send(200, {"ok": True})
+            return
         if self.path != "/speak":
             self._send(404, {"error": "not found"})
             return
@@ -327,7 +351,14 @@ class Handler(BaseHTTPRequestHandler):
         if not player.put(item):
             self._send(200, {"stopped": True})
             return
-        if not item.started.wait(timeout=WAIT_S):
+        # A stall is WAIT_S of waiting while not paused: a pause may last as long as the person talks.
+        waited = 0.0
+        while not item.started.wait(timeout=0.5):
+            if player.resumed.is_set():
+                waited += 0.5
+            if waited >= WAIT_S:
+                break
+        if not item.started.is_set():
             self._send(503, {"error": "playback stalled"})
         elif item.played:
             self._send(200, {"started": True})

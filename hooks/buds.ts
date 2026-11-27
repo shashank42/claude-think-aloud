@@ -2,27 +2,31 @@ import type { EngineInterface } from 'claude-code'
 
 /**
  * Earbud taps (OPPO / OnePlus / realme buds; buds/buds.swift reads them):
- *   double tap, either bud   talk: Claude Code's own dictation starts in this session; double tap again sends it
+ *   single tap, left          listen / stop listening: Claude Code's own dictation, added to the end of the prompt
+ *                             box; stopping never sends, so the next tap adds more
+ *   single tap, right         send: stops listening and sends the prompt box (an empty box: starts listening)
  *   triple tap, right / left  next block / back, as ⇧→ / ⇧←
- *   single tap, left          play/pause for videos and music (the buds and macOS do it; not seen here)
+ *   double tap, left          play/pause for videos and music (the buds and macOS do it; not seen here)
  * Every session runs its own listener and hears every tap; the session that spoke last (or was last typed to) acts:
  * it writes its id to TARGET whenever it starts saying something or gets a prompt.
  *
  * Talking presses Space in this session's own terminal (the helper types into its controlling tty), so it is Claude
- * Code's dictation in whichever mode settings.json has: "hold" (a Space held down until the second double tap, then
- * Enter) or "tap" (Space, Space). While it records, the mic chosen with /speak mic is the input ("default": whatever
- * macOS has). A Bluetooth mic puts the buds in call mode, where a tap calls Siri instead of reporting.
+ * Code's dictation in whichever mode settings.json has: "hold" (a Space held down while it listens, then
+ * Enter to send) or "tap" (Space, Space). While it records, the mic chosen with /speak mic is the input ("default": whatever
+ * macOS has). A Bluetooth mic puts the buds in call mode, where a tap calls Siri instead of reporting. What is
+ * being said pauses while it listens and carries on after.
  */
 
 export type BudsHooks = {
-  hush: () => void
+  pause: () => void
+  resume: () => void
   next: () => string | undefined
   back: () => string | undefined
 }
 
 const ENGINE_HOME = '"${THINK_ALOUD_HOME:-$HOME/.claude/think-aloud}"'
 const HELPER = `${ENGINE_HOME}/buds/think-aloud-buds`
-/** How long a recording may run before it is sent anyway (a second double tap lost). */
+/** How long a recording may run before it stops by itself (a second tap lost); it is not sent. */
 const TALK_MAX_MS = 5 * 60_000
 /** How long after "send" the transcript may take to reach the prompt box. */
 const TRANSCRIPT_WAIT_MS = 20_000
@@ -35,7 +39,7 @@ const B = {
   session: '',
   targetFile: '',
   lastMark: 0,
-  talking: null as null | { holder: AsyncGenerator<unknown, unknown> | null; mic: string | null; before: string; mode: 'hold' | 'tap'; timer: { cancel: () => void } | null },
+  talking: null as null | { holder: AsyncGenerator<unknown, unknown> | null; mic: string | null; before: string; mode: 'hold' | 'tap'; timer: { cancel: () => void } | null; hooks: BudsHooks },
 }
 
 async function sh($: EngineInterface, script: string, args: string[] = [], timeoutMs = 10_000) {
@@ -115,7 +119,12 @@ export function budsStop(): void {
 async function onTap($: EngineInterface, hooks: BudsHooks, side: 'L' | 'R', action: number): Promise<void> {
   try {
     if (!(await isTarget($))) return
-    if (action === 2) await talk($, hooks)
+    if (action === 1 && side === 'L') await (B.talking ? stop($) : listen($, hooks))
+    else if (action === 1) {
+      if (B.talking) await stop($, true)
+      else if ((await $.prompt.read()).text.trim()) await type($, '0d')
+      else await listen($, hooks)
+    }
     else if (action === 3) {
       if (B.talking) return
       const who = side === 'R' ? hooks.next() : hooks.back()
@@ -146,19 +155,21 @@ function chime($: EngineInterface, name: 'Tink' | 'Pop'): void {
   void $.process.run(['afplay', '-v', '0.4', `/System/Library/Sounds/${name}.aiff`]).catch(() => undefined)
 }
 
-async function talk($: EngineInterface, hooks: BudsHooks): Promise<void> {
-  if (B.talking) return send($)
+/** Dictation starts, added to the end of what the prompt box holds; what is being said pauses meanwhile. */
+async function listen($: EngineInterface, hooks: BudsHooks): Promise<void> {
   const mode = await voiceMode($)
   if (mode === 'off') {
     $.ui.toast('Turn on Claude Code voice first: /voice')
     return
   }
-  const before = (await $.prompt.read()).text
-  if (mode === 'tap' && before.trim()) {
-    $.ui.toast('Dictation starts in an empty prompt box: clear it first.')
+  const box = await $.prompt.read()
+  if (mode === 'tap' && box.text.trim()) {
+    $.ui.toast("Claude Code's tap mode starts only in an empty prompt box: /voice hold adds to what is there.")
     return
   }
-  hooks.hush()
+  // Dictation goes in at the cursor: the end, so it adds to what is there.
+  if (box.cursor !== box.text.length) await $.prompt.fill({ text: box.text, mode: 'replace' })
+  hooks.pause()
   // The mic chosen with /speak mic while it records; the default input comes back after.
   let restore: string | null = null
   if (budsMic !== 'default') {
@@ -174,17 +185,17 @@ async function talk($: EngineInterface, hooks: BudsHooks): Promise<void> {
     holder = $.process.spawn({ argv: ['/bin/sh', '-c', `exec ${HELPER} hold`] })
     const h = holder
     void (async () => {
-      // Runs until "send" ends it.
+      // Runs until "stop" ends it.
       for await (const piece of h) void piece
     })().catch(() => undefined)
   } else await type($, '20')
-  const timer = $.clock.after(TALK_MAX_MS, () => void send($))
-  B.talking = { holder, mic: restore, before, mode, timer }
-  $.ui.toast('🎙 Listening: double-tap to send')
+  const timer = $.clock.after(TALK_MAX_MS, () => void stop($))
+  B.talking = { holder, mic: restore, before: box.text, mode, timer, hooks }
+  $.ui.toast('🎙 Listening: tap left to stop, right to send')
 }
 
-/** The second double tap: the recording ends, and once its words are in the prompt box they are sent. */
-async function send($: EngineInterface): Promise<void> {
+/** Listening stops; what is being said carries on. With `send`, the prompt box goes once its new words are in it. */
+async function stop($: EngineInterface, send = false): Promise<void> {
   const t = B.talking
   if (!t) return
   B.talking = null
@@ -192,9 +203,12 @@ async function send($: EngineInterface): Promise<void> {
   if (t.holder) await t.holder.return(undefined).catch(() => undefined)
   else await type($, '20')
   chime($, 'Pop')
+  t.hooks.resume()
   // The words were heard; the input goes back to what it was once the recorder has let go.
   if (t.mic) $.clock.after(1500, () => void sh($, `exec ${HELPER} mic "$1"`, [t.mic!]))
-  // Hold mode leaves the transcript in the box; tap mode sends three words or more by itself. What is left is sent.
+  // Tap mode sends three words or more by itself; anything else waits in the box, and "send" sends it once the
+  // transcript has landed (the box has changed and held still for a moment).
+  if (!send) return
   const start = await $.clock.now()
   let last = t.before
   let steady = 0
@@ -210,6 +224,8 @@ async function send($: EngineInterface): Promise<void> {
     } else if (t.mode === 'tap' && (await $.clock.now()) - start > 4000) return // sent by itself
     last = text
   }
+  // Nothing new was heard: what was in the box goes as it is.
+  if ((await $.prompt.read()).text.trim()) await type($, '0d')
 }
 
 export type Mic = { id: string; isDefault: boolean; kind: string; name: string }
@@ -235,7 +251,7 @@ export function setBudsMic(m: string): void {
 export async function budsSetup($: EngineInterface): Promise<string> {
   const r = await sh($, `exec ${HELPER} setup`, [], 30_000).catch(e => ({ exitCode: 1, stdout: String(e), stderr: '' }))
   if (r.exitCode !== 0) return `Could not set the buds' gestures (${r.stdout.trim().split('\n').pop() || 'no answer'}). Are they connected?`
-  return 'Gestures set: double tap = talk / send, triple tap right = next, triple tap left = back, left single tap = play/pause.'
+  return 'Gestures set: tap left = listen / stop, tap right = send, triple tap right = next, triple tap left = back, double tap left = play/pause.'
 }
 
 export function budsNow(on: boolean): string {

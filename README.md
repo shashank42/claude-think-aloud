@@ -139,18 +139,20 @@ OPPO, OnePlus and realme buds (tested on OnePlus Nord Buds 3) work as a remote, 
 
 | Gesture | Does |
 | --- | --- |
-| Double tap, either bud | Talk: Claude Code's own voice dictation starts. Double tap again to send |
+| Tap, left | Listen: Claude Code's own voice dictation, added to the end of the prompt box. Again: stop listening (nothing is sent, so the next tap adds more) |
+| Tap, right | Send the prompt box (while listening: stop, then send; with an empty box: start listening) |
 | Triple tap, right | Next block (as `⇧→`) |
 | Triple tap, left | Back (as `⇧←`) |
-| Single tap, left | Play/pause for videos and music |
+| Double tap, left | Play/pause for videos and music |
 
 - **Which session.** The one that spoke last, or that you typed to last. Every open session listens, and that one acts.
-- **Dictation mode.** It follows your `/voice` setting. In `hold` mode the mod holds Space down until the second double
-  tap, then presses Enter. In `tap` mode it taps Space twice.
+- **Dictation mode.** It follows your `/voice` setting. In `hold` mode the mod holds Space down while it listens; in
+  `tap` mode it taps Space (that mode starts only in an empty prompt box, so adding more needs `hold`).
+- **Speech pauses** while it listens and carries on from the same word after (Kokoro; the Mac voice stops instead).
 - **Microphone.** `/speak mic` lists Default (macOS's input) and every mic connected; `/speak mic 2` picks one, used
   only while you talk. A Bluetooth mic, the buds' own included, puts the buds in call mode, where a tap calls Siri
   instead of reporting: then send from the keyboard.
-- **Media.** The buds send the Mac's player a "play" with every gesture. After a double or triple tap the mod pauses the
+- **Media.** The buds send the Mac's player a "play" with every gesture. After a tap or triple tap the mod pauses the
   player again, so a video never starts by itself, and talking pauses it.
 - **Setup.** `/speak buds setup` writes the gesture map onto the buds. The helper `buds/buds.swift` builds on first use
   and needs Xcode's command line tools. It reads the taps over Bluetooth LE and types into the session's own terminal.

@@ -1,20 +1,20 @@
 // think-aloud-buds: earbud taps for think-aloud (OPPO / OnePlus / realme buds; tested on OnePlus Nord Buds 3).
 //
 // The buds report each gesture on their control service (protocol: github.com/junedkhatri31/buds-control, MIT,
-// docs/PROTOCOL.md): event 0x0204 with id 0xF1, then side (1 left, 2 right), button, action (2 double tap, 3 triple
-// tap). They report only gestures set to a media function (next / previous); the map is set by `setup`. Read over BLE
+// docs/PROTOCOL.md): event 0x0204 with id 0xF1, then side (1 left, 2 right), button, action (1 single tap, 2 double,
+// 3 triple). They report only gestures set to next or previous; the map is set by `setup`. Read over BLE
 // (GATT), which leaves the classic channel to any other app.
 //
-//   listen         prints "tap L 2" / "tap R 3", "buds <name>", "nobuds". The buds send the Mac's player a plain "play"
-//                  with every gesture too: after a double or triple tap this pauses the player again (a video never
-//                  starts by itself, and talking to Claude pauses it). Left single tap stays play/pause for videos.
+//   listen         prints "tap L 1" / "tap R 3", "buds <name>", "nobuds". The buds send the Mac's player a plain "play"
+//                  with every gesture too: after a reported tap this pauses the player again (a video never starts by
+//                  itself, and talking to Claude pauses it). Left double tap stays play/pause for videos.
 //   type <hex>     types bytes into this process's terminal (TIOCSTI on its controlling tty): "20" Space, "0d" Enter
 //   hold           types a Space every 30 ms until killed (a held Space bar, for Claude Code's hold-to-talk)
 //   mics           the inputs, one a line: "<id>\t<default 0|1>\t<kind>\t<name>" (kind: usb, bluetooth, builtin (lid
 //                  closed: builtin-off, it hears nothing), continuity, virtual, other)
 //   mic <id>       makes it the default input
-//   setup          sets double tap = next, triple tap = previous on both buds (the gestures that report), left single
-//                  tap = play/pause, right single tap = none; reads the map back
+//   setup          sets single tap = next, triple tap = previous on both buds (the gestures that report), left double
+//                  tap = play/pause, right double tap = none; reads the map back
 import AppKit
 import CoreAudio
 import CoreBluetooth
@@ -112,10 +112,10 @@ final class Buds: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     p.writeValue(frame(cmd: cmd, seq: seq, payload: payload), for: w, type: .withResponse)
     seq &+= 1
   }
-  /// Double tap = next (6), triple tap = previous (5), left (1) and right (2), button 1: the gestures that report.
-  /// Left single tap = play/pause (1) for videos and music; right single tap = none (0).
+  /// Single tap = next (6), triple tap = previous (5), left (1) and right (2), button 1: the gestures that report.
+  /// Left double tap = play/pause (1) for videos and music; right double tap = none (0).
   func setup() {
-    send(0x0401, [6, 1, 1, 2, 6, 1, 1, 3, 5, 2, 1, 2, 6, 2, 1, 3, 5, 1, 1, 1, 1, 2, 1, 1, 0])
+    send(0x0401, [6, 1, 1, 1, 6, 1, 1, 3, 5, 2, 1, 1, 6, 2, 1, 3, 5, 1, 1, 2, 1, 2, 1, 2, 0])
     DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.send(0x0108, []) }
     DispatchQueue.main.asyncAfter(deadline: .now() + 4) { out("timeout"); exit(4) }
   }
