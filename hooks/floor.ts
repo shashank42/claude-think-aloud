@@ -1,26 +1,31 @@
 import type { EngineInterface } from 'claude-code'
 
 /**
- * One voice at a time across sessions: each session's speech waits for "the floor" (FLOOR, a small file every session
- * reads), so two sessions working at once never talk over each other. A session keeps the floor while it is mid-flow
- * (GRACE_MS after each utterance), and hands it over after TURN_MS when another has been waiting. When the voice
- * changes session, the new one says its name first, so it is clear whose work is being heard.
+ * One voice at a time across sessions: each session's speech waits for "the floor" (a small file every session reads),
+ * so two sessions working at once never talk over each other, and nothing is cut off to make room. A session keeps the
+ * floor while it has more to say (its speech is running, or it spoke less than GRACE_MS ago); the others wait their
+ * turn, first come first served. A soft cue (`cue`) says something new has joined the queue, so the person can skip
+ * ahead (next) or let it play; when the voice changes session, the new one says its name first.
  */
 
-/** After an utterance ends, the floor stays this long: the same session's next line follows without another between. */
-const GRACE_MS = 2500
-/** A session that has spoken this long while another waits hands the floor over. */
-const TURN_MS = 20_000
+/** After the last line ends, the floor stays this long: the same session's next thought follows on, not another's. */
+const GRACE_MS = 6000
 /** How often a waiting session looks again. */
 const POLL_MS = 250
+/** A want not written again for this long is a session that stopped waiting (or ended). */
+const WANT_STALE_MS = 2000
 
-type Floor = { holder: string; until: number; since: number; last: string }
+type Floor = { holder: string; until: number; last: string }
 type Want = { since: number; at: number }
 
-const F = { dir: '', me: '', name: '', since: 0 }
+const F = { dir: '', me: '', name: '', cueAt: 0 }
 
-async function home($: EngineInterface): Promise<string> {
-  return (await $.process.run(['/bin/sh', '-c', 'printf %s "$HOME"'])).stdout
+/** The soft sound for "something new is queued" (another session's, or a new thought here); one per 3 s at most. */
+export async function cue($: EngineInterface): Promise<void> {
+  const now = await $.clock.now()
+  if (now - F.cueAt < 3000) return
+  F.cueAt = now
+  void $.process.run(['afplay', '-v', '0.35', '/System/Library/Sounds/Morse.aiff']).catch(() => undefined)
 }
 
 /** This session's name as said aloud: its name (/rename, a background session's), else its folder's. */
@@ -40,7 +45,7 @@ async function nameOf($: EngineInterface, h: string, me: string): Promise<string
 
 export async function floorInit($: EngineInterface): Promise<void> {
   if (F.dir) return
-  const h = await home($)
+  const h = (await $.process.run(['/bin/sh', '-c', 'printf %s "$HOME"'])).stdout
   F.me = await $.session.id()
   F.name = (await nameOf($, h, F.me)).replace(/([a-z])(\d)/gi, '$1 $2')
   F.dir = `${h}/.claude/think-aloud/floor`
@@ -58,13 +63,13 @@ async function writeFloor($: EngineInterface, f: Floor): Promise<void> {
   await $.fs.write(`${F.dir}/floor.json`, JSON.stringify(f))
 }
 
-/** Another session waiting long enough to be given the floor. */
-async function someoneWaits($: EngineInterface, now: number): Promise<boolean> {
+/** Another session that has waited longer than `since` and still waits: it goes first. */
+async function ahead($: EngineInterface, since: number, now: number): Promise<boolean> {
   for (const e of await $.fs.list(F.dir).catch(() => [])) {
     if (!e.name.startsWith('want.') || e.name === `want.${F.me}`) continue
     try {
-      const w = JSON.parse(await $.fs.read(`${F.dir}/${e.name}`)) as Want
-      if (now - w.at < 2 * POLL_MS + 1000 && now - w.since > 3000) return true
+      const w = JSON.parse(await $.fs.read(`${F.dir}/${e.name}`)) as Partial<Want>
+      if (w.at !== undefined && w.since !== undefined && now - w.at < WANT_STALE_MS && w.since < since) return true
     } catch {
       // gone meanwhile
     }
@@ -83,41 +88,53 @@ export async function floorTake($: EngineInterface, stop: () => boolean): Promis
   for (;;) {
     const now = await $.clock.now()
     const f = await readFloor($)
-    const mine = f?.holder === F.me && f.until > now
-    const free = !f || f.until <= now
-    // Mine, but another has waited and this turn has run long: hand it over, and queue behind them.
-    const yieldNow = mine && now - (f?.since ?? now) > TURN_MS && (await someoneWaits($, now))
-    if ((mine || free) && !yieldNow) {
-      const switched = !mine && !!f?.last && f.last !== F.me
-      await writeFloor($, { holder: F.me, until: now + 60_000, since: mine ? f!.since : now, last: F.me })
+    if (f?.holder === F.me && f.until > now) {
+      // Mine still: this line follows on (kept while it is prepared; its playing time is set when it starts).
+      await writeFloor($, { ...f, until: Math.max(f.until, now + 15_000) })
+      return ''
+    }
+    if ((!f || f.until <= now) && !(await ahead($, since || now, now))) {
+      await writeFloor($, { holder: F.me, until: now + 15_000, last: F.me })
       // Two sessions taking a free floor at once: the write that stands wins.
       await $.clock.sleep(40)
       if ((await readFloor($))?.holder === F.me) {
         // No longer waiting (the fs has no delete: an empty want counts for nothing).
         if (since) void $.fs.write(wantFile, '{}').catch(() => undefined)
-        return switched ? `${F.name}.` : ''
+        return f?.last && f.last !== F.me ? `${F.name}.` : ''
       }
-    } else if (yieldNow) {
-      // Handed over once the line playing now has ended (until, less the grace); the one waiting takes it then, and
-      // this session waits a moment longer so it does not take it straight back.
-      const end = f!.until - GRACE_MS
-      await writeFloor($, { ...f!, holder: '', until: end })
-      since = now
-      await $.clock.sleep(Math.max(0, end - now) + 1000)
-      continue
     }
-    if (stop()) return ''
+    if (stop()) {
+      if (since) void $.fs.write(wantFile, '{}').catch(() => undefined)
+      return ''
+    }
+    // Waiting behind another session's speech: once, a cue that something new is queued.
+    if (!since) void cue($)
     since ||= now
     await $.fs.write(wantFile, JSON.stringify({ since, at: now } satisfies Want)).catch(() => undefined)
     await $.clock.sleep(POLL_MS)
   }
 }
 
-/** The utterance just started plays about `playMs`: the floor is kept until then, and a moment after. */
+/** The utterance just started plays about `playMs`: the floor is kept until then, and GRACE_MS after. */
 export async function floorPlaying($: EngineInterface, playMs: number): Promise<void> {
   const now = await $.clock.now()
   const f = await readFloor($)
-  if (f?.holder === F.me) await writeFloor($, { ...f, until: now + playMs + GRACE_MS })
+  if (f?.holder === F.me) await writeFloor($, { ...f, until: Math.max(f.until, now + playMs + GRACE_MS) })
+}
+
+/** Speech here is still running (a thought being prepared): the floor is kept a while longer. */
+export async function floorKeep($: EngineInterface): Promise<void> {
+  if (!F.dir) return
+  const now = await $.clock.now()
+  const f = await readFloor($)
+  if (f?.holder === F.me && f.until > now) await writeFloor($, { ...f, until: Math.max(f.until, now + GRACE_MS) })
+}
+
+/** The person has stopped talking: what was held here carries on, the floor kept GRACE_MS (its next line takes it again). */
+export async function floorResume($: EngineInterface): Promise<void> {
+  const now = await $.clock.now()
+  const f = await readFloor($)
+  if (f?.holder === F.me) await writeFloor($, { ...f, until: now + GRACE_MS })
 }
 
 /** Nothing more to say here (a hush, a failed line): the floor is free now. */
@@ -127,10 +144,10 @@ export async function floorFree($: EngineInterface): Promise<void> {
   if (f?.holder === F.me) await writeFloor($, { ...f, until: 0 })
 }
 
-/** The person is talking by the buds: nobody speaks until it is released (floorFree). */
+/** The person is talking by the buds: nobody speaks until it is released (floorResume, or floorFree). */
 export async function floorHush($: EngineInterface): Promise<void> {
   if (!F.dir) await floorInit($)
   const now = await $.clock.now()
   const f = await readFloor($)
-  await writeFloor($, { holder: F.me, until: now + 10 * 60_000, since: now, last: f?.last ?? F.me })
+  await writeFloor($, { holder: F.me, until: now + 10 * 60_000, last: f?.last ?? F.me })
 }

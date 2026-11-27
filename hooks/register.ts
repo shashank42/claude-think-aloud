@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import { boardText, defaultCast, mergeCast, ROLES, roleOf, StepReader, Team, TEAM, trimBacklog, WORKERS, type Line, type Role, type TeamSettings, type Utterance } from './cast'
 import { budsCancel, budsNote, budsNow, budsSetup, budsStart, budsStop, budsTarget, mics, setBudsMic, type BudsHooks, type Mic } from './buds'
-import { floorFree, floorHush, floorInit, floorPlaying, floorTake } from './floor'
+import { cue, floorFree, floorHush, floorInit, floorKeep, floorPlaying, floorResume, floorTake } from './floor'
 import { fallbackNarration, gistOf, narrationOf, narratorPrompt, spoken, synthOf, synthPrompt } from './speech'
 
 /**
@@ -100,7 +100,7 @@ const ENGINE_HOME = '"${THINK_ALOUD_HOME:-$HOME/.claude/think-aloud}"'
  * Stops the voice server an earlier load of this module started in this session, if it still runs: server.py
  * writes its pid to server.<its parent's pid>.pid, and a module reload (/reload-plugins) keeps the same parent.
  */
-const STOP_PREDECESSOR = `p=$(cat ${ENGINE_HOME}/server.$PPID.pid 2>/dev/null) && ps -p "$p" -o command= 2>/dev/null | grep -q server.py && kill "$p"; exit 0`
+const STOP_PREDECESSOR = `p=$(cat ${ENGINE_HOME}/server.$PPID.pid 2>/dev/null) && ps -p "$p" -o command= 2>/dev/null | grep -q server.py && kill "$p" && i=0 && while kill -0 "$p" 2>/dev/null && [ $i -lt 320 ]; do sleep 0.1; i=$((i+1)); done; exit 0`
 const RATE_MIN = 120
 const RATE_MAX = 400
 /**
@@ -137,6 +137,8 @@ const S = {
   epoch: 0,
   /** Held while the person talks by the buds (Kokoro's playback waits where it is). */
   paused: false,
+  /** The thoughts and reply sections queued so far (ideaOf): one new while another plays gets a cue. */
+  ideas: new Set<string>(),
   /** The director's call in flight, if any: one at a time, and a new prompt's replaces it. */
   directing: null as AbortController | null,
   /** The narrator's calls in flight, by the line they are for: a hush cuts them all, a dropped line its own. */
@@ -290,7 +292,7 @@ function pause($: EngineInterface): void {
 function resume($: EngineInterface): void {
   S.paused = false
   // What was held carries on: the floor stays for a moment, and its next line takes it again.
-  void floorPlaying($, 3000).catch(() => undefined)
+  void floorResume($).catch(() => undefined)
   if (S.kokoro.port !== null) void $.http.fetch(`http://127.0.0.1:${S.kokoro.port}/resume`, { method: 'POST' }).catch(() => undefined)
 }
 
@@ -336,8 +338,28 @@ function next($: EngineInterface): string | undefined {
   return S.settings.cast[u.role].name
 }
 
+/** A thought or reply section's idea ("turn:step:block", a reply paragraph without its "#n"); '' for an action line. */
+function ideaOf(section: string | undefined): string {
+  return !section || section.startsWith('line:') ? '' : section.split('#')[0]!
+}
+
+/** A new thought or reply queued while another plays: a soft cue, so the person can skip ahead or let it come. */
+function cueNewIdeas($: EngineInterface): void {
+  const playing = ideaOf(S.current?.section)
+  let fresh = false
+  for (const line of S.team.queue) {
+    const idea = ideaOf(line.section)
+    if (!idea || S.ideas.has(idea)) continue
+    S.ideas.add(idea)
+    if (playing && idea !== playing) fresh = true
+  }
+  if (S.ideas.size > 500) S.ideas.clear()
+  if (fresh) void cue($).catch(() => undefined)
+}
+
 /** What the team queued: the next blocks' narration is asked for, and speech starts if it is idle. */
 function play($: EngineInterface): void {
+  cueNewIdeas($)
   narrateAhead($)
   if (S.team.queue.length > 0 && !S.running) void work($)
 }
@@ -474,6 +496,8 @@ async function work($: EngineInterface): Promise<void> {
   S.statusTimer = null
   const mine = S.epoch
   const team = S.team
+  // While speech runs here (a line being prepared between two), the floor stays: no other session cuts in mid-thought.
+  const keep = $.clock.every(1000, () => void floorKeep($).catch(() => undefined))
   /** The run failed, or stopped with lines left on purpose (Kokoro not up yet): no new run starts by itself. */
   let failed = false
   /** Kokoro's last utterance, still playing when this run ends: the status line stays up until it is over. */
@@ -544,6 +568,7 @@ async function work($: EngineInterface): Promise<void> {
     // Nothing here may reach the engine; what is left waits for the next line queued (no retry loop).
     failed = true
   } finally {
+    keep.cancel()
     S.running = false
     // Nothing is playing out: the floor is free at once (else it stays until the last line has played).
     if (playing === 0) void floorFree($).catch(() => undefined)
@@ -682,7 +707,8 @@ async function serveKokoro($: EngineInterface): Promise<void> {
   let server: AsyncGenerator<{ stream: string; text: string }, unknown> | null = null
   try {
     // One server per session: a reloaded module's predecessor goes first.
-    await $.process.run(['/bin/sh', '-c', STOP_PREDECESSOR]).catch(() => undefined)
+    // It finishes the line it is saying first (server.py drains): the new one waits for that, no overlap.
+    await $.process.run(['/bin/sh', '-c', STOP_PREDECESSOR], { timeoutMs: 40_000 }).catch(() => undefined)
     if (S.kokoro.state !== 'starting' || S.kokoro.server !== null) return
     const spawned = $.process.spawn({
       argv: ['/bin/sh', '-c', `exec ${ENGINE_HOME}/venv/bin/python "$0"`, `${$.plugin.root}/engine/server.py`],

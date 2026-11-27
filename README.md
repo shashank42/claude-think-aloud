@@ -65,9 +65,11 @@ Also:
   what is being said: the whole thought, the reply's paragraph, table or code block, or the tool line. What comes
   after plays at once.
 - **Several sessions at once** take turns: one voice at a time across every session on the Mac (a shared "floor",
-  `~/.claude/think-aloud/floor/`). A session keeps the floor while it is mid-flow and hands it over after about 20
-  seconds when another is waiting; when the voice changes session, it says that session's name first ("awaazpro 2.
-  …"). Nobody speaks while you talk by the buds.
+  `~/.claude/think-aloud/floor/`). Nothing is cut off to make room: a session keeps the floor until it has nothing more
+  to say, and the others wait their turn, first come first served. A soft cue (macOS's Morse sound) says something new
+  has been queued, another session's or a new thought here, so you can skip ahead (`⇧→`, triple tap right) or let it
+  come. When the voice changes session, it says that session's name first ("awaazpro 2. …"). Nobody speaks while you
+  talk by the buds. A reload lets the line being said finish first.
 - Silent in headless `claude -p` runs and in subagents.
 
 macOS only.

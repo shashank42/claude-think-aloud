@@ -23,7 +23,8 @@ stream opened per utterance clipped its first syllable while the device woke. If
 unplugged, another device picked, the Mac asleep) the stream is dropped and the next utterance opens a fresh one.
 
 The server exits when the session that started it is gone (its parent process changes). It writes its pid to
-server.<parent pid>.pid in the engine's home, so a reloaded mod in the same session can stop the one before it.
+server.<parent pid>.pid in the engine's home, so a reloaded mod in the same session can stop the one before it. Told to
+stop (SIGTERM: a reload), it finishes the utterance playing first, up to DRAIN_S: nothing is cut off mid-word.
 """
 
 import collections
@@ -48,6 +49,7 @@ GAP_S = 0.12  # between utterances
 BLOCK = RATE // 20  # 50 ms: how soon a stop is heard
 IDLE_CLOSE_S = 20.0
 WAIT_S = 60.0  # how long a /speak waits for its turn to play before it reports a stall
+DRAIN_S = 30.0  # told to stop, how long the utterance playing may take to finish
 PID_FILE = os.path.join(HOME, f"server.{os.getppid()}.pid")
 FOLLOW_EVERY = 20  # blocks (1 s): how often a playing utterance checks whether the Mac's output device changed
 
@@ -114,9 +116,23 @@ def leave(*_args) -> None:
     os._exit(0)
 
 
+def drain(*_args) -> None:
+    """Stops taking speech and exits once the utterance playing now has ended (at once when none plays)."""
+    def wait() -> None:
+        deadline = time.monotonic() + DRAIN_S
+        while player is not None and player.current is not None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        leave()
+
+    if player is not None:
+        player.draining = True
+    threading.Thread(target=wait, daemon=True).start()
+
+
+player = None
 # Before the model loads (seconds): a reloaded mod can stop this one even while it is still loading.
 write_pid()
-signal.signal(signal.SIGTERM, leave)
+signal.signal(signal.SIGTERM, drain)
 
 kokoro = Kokoro(MODEL, VOICES)
 voices = sorted(kokoro.get_voices())
@@ -154,6 +170,8 @@ class Player:
         self.lock = threading.Lock()
         self.items: "queue.Queue[Item]" = queue.Queue()
         self.current: "Item | None" = None
+        # Told to stop: what plays finishes, nothing new starts.
+        self.draining = False
         # Sections skipped lately: an utterance of one still being synthesised is dropped when it is put.
         self.skipped: "collections.deque[str]" = collections.deque(maxlen=64)
         # Set while playing may go on; cleared by /pause.
@@ -195,7 +213,7 @@ class Player:
 
     def put(self, item: Item) -> bool:
         with self.lock:
-            if item.epoch != self.epoch or (item.section and item.section in self.skipped):
+            if self.draining or item.epoch != self.epoch or (item.section and item.section in self.skipped):
                 return False
             self.items.put(item)
             return True
@@ -219,7 +237,7 @@ class Player:
                     stream = close(stream)
                 continue
             try:
-                if item.epoch != self.epoch or item.skipped:
+                if self.draining or item.epoch != self.epoch or item.skipped:
                     continue
                 # The person picked another output (Speakers, earphones) since the stream opened: follow it.
                 if stream is not None and default_output() != device:
