@@ -29,7 +29,7 @@ export async function cue($: EngineInterface): Promise<void> {
 }
 
 /** This session's name as said aloud: its name (/rename, a background session's), else its folder's. */
-async function nameOf($: EngineInterface, h: string, me: string): Promise<string> {
+export async function nameOf($: EngineInterface, h: string, me: string): Promise<string> {
   const jobs = `${h}/.claude/jobs`
   for (const e of await $.fs.list(jobs).catch(() => [])) {
     try {
