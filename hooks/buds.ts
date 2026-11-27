@@ -262,7 +262,7 @@ export function setBudsMic(m: string): void {
 export async function budsSetup($: EngineInterface): Promise<string> {
   const r = await sh($, `exec ${HELPER} setup`, [], 30_000).catch(e => ({ exitCode: 1, stdout: String(e), stderr: '' }))
   if (r.exitCode !== 0) return `Could not set the buds' gestures (${r.stdout.trim().split('\n').pop() || 'no answer'}). Are they connected?`
-  return 'Gestures set: tap left = listen / stop, tap right = send, triple tap right = next, triple tap left = back, double tap left = play/pause.'
+  return 'Gestures set: tap left = listen / stop, tap right = stop listening and send, triple tap right = next, triple tap left = back, double tap left = play/pause.'
 }
 
 export function budsNow(on: boolean): string {

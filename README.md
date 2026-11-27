@@ -140,7 +140,7 @@ OPPO, OnePlus and realme buds (tested on OnePlus Nord Buds 3) work as a remote, 
 | Gesture | Does |
 | --- | --- |
 | Tap, left | Listen: Claude Code's own voice dictation, added to the end of the prompt box. Again: stop listening (nothing is sent, so the next tap adds more) |
-| Tap, right | Send the prompt box (while listening: stop, then send; with an empty box: start listening) |
+| Tap, right | Stop listening and send the prompt box (not listening: send it; an empty box: start listening) |
 | Triple tap, right | Next block (as `⇧→`) |
 | Triple tap, left | Back (as `⇧←`) |
 | Double tap, left | Play/pause for videos and music |

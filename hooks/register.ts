@@ -1072,7 +1072,7 @@ export const register: Register = on => {
           break
         }
         if (sub === 'setup') return { text: await budsSetup($) }
-        if (sub === '' || sub === 'status') return { text: `${budsNow(S.settings.buds)} Tap left: listen / stop (adds to the box, never sends). Tap right: send. Triple tap right: next block, left: back. Double tap left: play/pause. /speak buds on|off|setup; /speak mic picks the mic.` }
+        if (sub === '' || sub === 'status') return { text: `${budsNow(S.settings.buds)} Tap left: listen / stop (adds to the box, never sends). Tap right: stop listening and send. Triple tap right: next block, left: back. Double tap left: play/pause. /speak buds on|off|setup; /speak mic picks the mic.` }
         return { text: 'Use /speak buds on | off | setup' }
       }
       case 'mic': {
