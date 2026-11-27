@@ -8,8 +8,10 @@ import type { EngineInterface } from 'claude-code'
  *   triple tap, right / left  next block / back, as ⇧→ / ⇧←
  *   double tap, left          play/pause for videos and music (the buds and macOS do it; not seen here)
  * Every session runs its own listener and hears every tap; the session that spoke last (or was last typed to) acts:
- * it writes its id to TARGET whenever it starts saying something or gets a prompt. A message the buds send comes with
- * a note (budsNote): one addressed to another session by name, Claude forwards there, and that session takes the taps.
+ * it writes its id to TARGET whenever it starts saying something or gets a prompt. Clicking into another Claude Code
+ * pane in iTerm2 since then moves the taps there (owner, 27 Nov 2026: "if I manually click into another terminal then
+ * it should start working on that"); see Target. A message the buds send comes with a note (budsNote): one addressed to
+ * another session by name, Claude forwards there, and that session takes the taps.
  *
  * Talking presses Space in this session's own terminal (the helper types into its controlling tty), so it is Claude
  * Code's dictation in whichever mode settings.json has: "hold" (a Space held down while it listens, then
@@ -40,6 +42,8 @@ const B = {
   listener: null as AsyncGenerator<unknown, unknown> | null,
   session: '',
   targetFile: '',
+  /** One file per session: its tty, named by its session id (focused()). */
+  ttysDir: '',
   lastMark: 0,
   /** When the buds last pressed Enter: the prompt that enters next is theirs (budsNote). */
   sentAt: 0,
@@ -50,22 +54,81 @@ async function sh($: EngineInterface, script: string, args: string[] = [], timeo
   return $.process.run(['/bin/sh', '-c', script, 'think-aloud', ...args], { timeoutMs })
 }
 
+/**
+ * Who the taps go to (TARGET): `session`, the one that spoke or was typed to last; `focus`, the iTerm2 pane (its tty)
+ * that had the keyboard when it became the target; `talking`, set while that session records. A click into another
+ * Claude Code pane since then (the focused tty differs from `focus` and belongs to a live session) moves the taps there;
+ * no click, and they stay with the last speaker, during and after its speech. A recording keeps its taps until it stops.
+ */
+type Target = { session?: string; at?: number; focus?: string | null; talking?: boolean }
+
+async function readTarget($: EngineInterface): Promise<Target> {
+  try {
+    return JSON.parse(await $.fs.read(B.targetFile)) as Target
+  } catch {
+    return {}
+  }
+}
+
+async function writeTarget($: EngineInterface, t: Target): Promise<void> {
+  await $.fs.write(B.targetFile, JSON.stringify({ ...t, at: await $.clock.now() })).catch(() => undefined)
+}
+
+/**
+ * The focused iTerm2 pane's tty ("ttys003", or "" when iTerm2 is not in front), and the live session it belongs to
+ * (the sessions list their tty in TTYS when they start listening for taps).
+ */
+async function focused($: EngineInterface): Promise<{ tty: string; owner: string }> {
+  const r = await sh(
+    $,
+    `f=$(osascript -e 'tell application "iTerm2" to if frontmost then get tty of current session of current window' 2>/dev/null)
+     f=\${f#/dev/}; printf '%s\\n' "$f"
+     [ -n "$f" ] || exit 0
+     # Newest first: a terminal a closed session left behind may hold a newer one now.
+     for n in $(ls -t "$1" 2>/dev/null); do
+       e="$1/$n"; [ -f "$e" ] || continue
+       read -r t < "$e" || continue
+       # Live: a claude process still runs on that terminal.
+       if [ "$t" = "$f" ] && ps -t "$t" -o comm= 2>/dev/null | grep -q claude; then basename "$e"; exit 0; fi
+     done`,
+    [B.ttysDir],
+    5000,
+  ).catch(() => null)
+  const [tty = '', owner = ''] = (r?.stdout ?? '').split('\n').map(s => s.trim())
+  return { tty, owner }
+}
+
 /** This session is the one the buds talk to: it is speaking, or was just typed to. */
 export async function budsTarget($: EngineInterface): Promise<void> {
   if (B.state !== 'ready' || !B.targetFile) return
   const now = await $.clock.now()
   if (now - B.lastMark < 2000) return
   B.lastMark = now
-  await $.fs.write(B.targetFile, JSON.stringify({ session: B.session, at: now })).catch(() => undefined)
+  const t = await readTarget($)
+  if (t.talking && t.session && t.session !== B.session && now - (t.at ?? 0) < TALK_MAX_MS + 60_000) return
+  // Still the target: keep the focus it was taken with, so a click made since still counts.
+  if (t.session === B.session) return void (await writeTarget($, t))
+  await writeTarget($, { session: B.session, focus: (await focused($)).tty, talking: false })
 }
 
+/** Whether this session acts on a tap: see Target. The session a click moved the taps to takes them over. */
 async function isTarget($: EngineInterface): Promise<boolean> {
-  try {
-    const t = JSON.parse(await $.fs.read(B.targetFile)) as { session?: string }
-    return !t.session || t.session === B.session
-  } catch {
+  const t = await readTarget($)
+  if (!t.session) return true
+  // A recording keeps its taps (until it stops, or a lost session's flag is older than any recording can be).
+  if (t.talking && (await $.clock.now()) - (t.at ?? 0) < TALK_MAX_MS + 60_000) return t.session === B.session
+  const f = await focused($)
+  if (f.owner && f.tty && f.tty !== (t.focus ?? '')) {
+    if (f.owner !== B.session) return false
+    await writeTarget($, { session: B.session, focus: f.tty, talking: false })
     return true
   }
+  return t.session === B.session
+}
+
+async function markTalking($: EngineInterface, talking: boolean): Promise<void> {
+  const t = await readTarget($)
+  await writeTarget($, { session: B.session, focus: talking ? (await focused($)).tty : (t.session === B.session ? t.focus : null), talking })
 }
 
 /** Builds the helper when it is missing or older than its source; listens for taps for the session's life. */
@@ -75,6 +138,9 @@ export async function budsStart($: EngineInterface, hooks: BudsHooks): Promise<v
     B.session = await $.session.id()
     const home = (await sh($, 'printf %s "$HOME"')).stdout
     B.targetFile = `${home}/.claude/think-aloud/buds-target.json`
+    B.ttysDir = `${home}/.claude/think-aloud/buds-ttys`
+    // This session's terminal (the tty its children inherit), for focused().
+    await sh($, 'mkdir -p "$1" && t=$(ps -o tty= -p $$ | tr -d " ") && [ -n "$t" ] && [ "$t" != "??" ] && printf "%s\\n" "$t" > "$1/$2"', [B.ttysDir, B.session]).catch(() => undefined)
     B.state = 'building'
     const build = await sh(
       $,
@@ -206,6 +272,7 @@ async function listen($: EngineInterface, hooks: BudsHooks): Promise<void> {
   } else await type($, '20')
   const timer = $.clock.after(TALK_MAX_MS, () => void stop($))
   B.talking = { holder, mic: restore, before: box.text, mode, timer, hooks }
+  await markTalking($, true)
   $.ui.toast(`🎙 Listening${want ? ` (${want.name})` : ''}: tap left to stop, right to send`)
 }
 
@@ -215,6 +282,7 @@ async function stop($: EngineInterface, send = false): Promise<void> {
   if (!t) return
   B.talking = null
   t.timer?.cancel()
+  await markTalking($, false)
   if (t.holder) await t.holder.return(undefined).catch(() => undefined)
   else await type($, '20')
   chime($, 'Pop')
