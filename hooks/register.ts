@@ -6,12 +6,12 @@ import { fallbackNarration, gistOf, narrationOf, narratorPrompt, spoken, synthOf
 
 /**
  * think-aloud: Claude's thinking and replies, spoken as they stream by a small fixed team of voices (docs/cast.md),
- * in Kokoro-82M's voices (local, free, offline), or the Mac's own `say`.
+ * in Kokoro-82M's voices (local, free, offline), or the Mac's own `say` (/speak engine say).
  *
  * Kokoro is set up by itself the first time (engine/setup.sh in the background: a Python environment and the model,
- * about 350 MB, under ~/.claude/think-aloud); `say` speaks until it is ready, and whenever the Kokoro server is not
- * up. Each session then starts one local voice server (engine/server.py) that keeps the model loaded and one audio
- * stream open, and prepares the next utterance while one plays.
+ * about 350 MB, under ~/.claude/think-aloud); speech waits until it is ready. Each session then starts one local voice
+ * server (engine/server.py) that keeps the model loaded and one audio stream open, and prepares the next utterance
+ * while one plays. Earbud taps (buds.ts) talk, skip and go back.
  *
  * A `turn.step` hook reads the main loop's response as it arrives (subagents stay quiet) through a StepReader
  * (cast.ts), which cuts it into sentences the moment each one ends (speech.ts) and hands the team each tool call
@@ -22,8 +22,8 @@ import { fallbackNarration, gistOf, narrationOf, narratorPrompt, spoken, synthOf
  * read.
  *
  * In `live` pace (the default) speech keeps up with the model: when more than BACKLOG_MAX lines wait, the action
- * lines go first, then the oldest thinking (the reply's never). Sending a message, pressing Esc, or `/speak stop`
- * silences it at once. "Next" (⇧→, the ⏭ above the prompt, or `/speak next`) skips the rest of what is being said:
+ * lines go first, then the oldest thinking (the reply's never). Esc or `/speak stop` silences it at once; a new
+ * message drops only the old turn's waiting thinking and action lines. "Next" (⇧→, the ⏭ above the prompt, or `/speak next`) skips the rest of what is being said:
  * the whole thought, the reply's paragraph, table or code block, or the action line; what follows plays at once.
  * `/speak` shows and changes the settings, kept across sessions.
  */
@@ -102,12 +102,6 @@ const ENGINE_HOME = '"${THINK_ALOUD_HOME:-$HOME/.claude/think-aloud}"'
 const STOP_PREDECESSOR = `p=$(cat ${ENGINE_HOME}/server.$PPID.pid 2>/dev/null) && ps -p "$p" -o command= 2>/dev/null | grep -q server.py && kill "$p"; exit 0`
 const RATE_MIN = 120
 const RATE_MAX = 400
-/**
- * The keybinding action whose chord presses "next" (keybindings.json, e.g. `"alt+right": "diff:back"` in Chat).
- * Claude Code has no actions of a plugin's own yet, so this borrows one with no handler at the prompt: the diff
- * dialog's Back, which only acts while that dialog is open (and the binding lives in Chat, not there).
- */
-const NEXT_ACTION = 'diff:back'
 /**
  * What is being said now, "Name: words" ('' when quiet): the amber band above the prompt shows it, with ⏮ and ⏭. A
  * thought's own "Thought for" row cannot be drawn on, and rows already written to the scrollback are not redrawn, so the
@@ -920,7 +914,7 @@ export const register: Register = on => {
       null,
       h(Button, { key: 'think-aloud-back', label: '⏮ back', plain: true, onPress: () => void back($) }),
       h(Text, null, '  '),
-      h(Button, { key: 'think-aloud-next', label: '⏭ next', action: NEXT_ACTION, plain: true, onPress: () => void next($) }),
+      h(Button, { key: 'think-aloud-next', label: '⏭ next', plain: true, onPress: () => void next($) }),
       h(Text, { dimColor: true }, '  ⇧← back · ⇧→ next block'),
       ),
     ) as RenderElement

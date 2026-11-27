@@ -2,7 +2,8 @@
 
 A Claude Code plugin that reads Claude's thinking and replies aloud as they stream, as a small fixed team of voices:
 without looking at the screen you can tell what kind of work is happening by who is speaking. The voice runs on
-your Mac: free, offline, no API key.
+your Mac: free, offline, no API key. With OPPO, OnePlus or realme earbuds, taps talk back, skip and go back
+([Earbuds](#earbuds)).
 
 ## The voice
 
@@ -98,7 +99,8 @@ the entry if it is):
 }
 ```
 
-`command:speak-next` and `command:speak-back` run think-aloud's silent `/speak-next` and `/speak-back`. ⌥→ / ⌥← stay free for jumping a word in the prompt. ⌘ is no good: most terminals keep it and never pass it on. Where ⇧→ does nothing, click ⏮ / ⏭ or type
+`command:speak-next` and `command:speak-back` run think-aloud's silent `/speak-next` and `/speak-back`. ⌥→ / ⌥← stay
+free for jumping a word in the prompt; ⌘ never reaches most terminals. Where ⇧→ does nothing, click ⏮ / ⏭ or type
 `/speak back` / `/speak next`.
 
 ## Use

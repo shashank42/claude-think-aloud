@@ -7,7 +7,7 @@ fixed, not a new voice per sentence.
 
 ## The team (fixed, seven people)
 
-| Role (stream) | Name | Kokoro voice | Owns | Mac `say` fallback |
+| Role (stream) | Name | Kokoro voice | Owns | Mac voice (`/speak engine say`) |
 | --- | --- | --- | --- | --- |
 | lead | Maya | af_heart | Everything said **to the user**: the visible reply text. The team's one face. | Samantha |
 | planner | Theo | bm_george | Thinking that belongs to no specific stream yet: understanding the ask, planning, research (web, docs, reading and searching code) | Daniel |
@@ -19,7 +19,7 @@ fixed, not a new voice per sentence.
 
 Voice choice: Kokoro's best-graded English voices, spread across American/British and female/male so any two
 people in a row sound clearly different. If a voice is missing from the voices file, that role falls back to the
-lead's voice for Kokoro, or the system default for `say` (never silence).
+lead's voice for Kokoro, or the system voice for `say` (never silence).
 
 ## Who speaks what
 
