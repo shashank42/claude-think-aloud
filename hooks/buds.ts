@@ -8,7 +8,8 @@ import type { EngineInterface } from 'claude-code'
  *   triple tap, right / left  next block / back, as ⇧→ / ⇧←
  *   double tap, left          play/pause for videos and music (the buds and macOS do it; not seen here)
  * Every session runs its own listener and hears every tap; the session that spoke last (or was last typed to) acts:
- * it writes its id to TARGET whenever it starts saying something or gets a prompt.
+ * it writes its id to TARGET whenever it starts saying something or gets a prompt. A message the buds send comes with
+ * a note (budsNote): one addressed to another session by name, Claude forwards there, and that session takes the taps.
  *
  * Talking presses Space in this session's own terminal (the helper types into its controlling tty), so it is Claude
  * Code's dictation in whichever mode settings.json has: "hold" (a Space held down while it listens, then
@@ -40,6 +41,8 @@ const B = {
   session: '',
   targetFile: '',
   lastMark: 0,
+  /** When the buds last pressed Enter: the prompt that enters next is theirs (budsNote). */
+  sentAt: 0,
   talking: null as null | { holder: AsyncGenerator<unknown, unknown> | null; mic: string | null; before: string; mode: 'hold' | 'tap'; timer: { cancel: () => void } | null; hooks: BudsHooks },
 }
 
@@ -123,7 +126,7 @@ async function onTap($: EngineInterface, hooks: BudsHooks, side: 'L' | 'R', acti
     if (action === 1 && side === 'L') await (B.talking ? stop($) : listen($, hooks))
     else if (action === 1) {
       if (B.talking) await stop($, true)
-      else if ((await $.prompt.read()).text.trim()) await type($, '0d')
+      else if ((await $.prompt.read()).text.trim()) await enter($)
       else await listen($, hooks)
     }
     else if (action === 3) {
@@ -134,6 +137,12 @@ async function onTap($: EngineInterface, hooks: BudsHooks, side: 'L' | 'R', acti
   } catch (err) {
     B.note = String(err)
   }
+}
+
+/** Enter, as the buds' send: the prompt it submits may be for another session (budsNote). */
+async function enter($: EngineInterface): Promise<void> {
+  B.sentAt = await $.clock.now()
+  await type($, '0d')
 }
 
 /** The bytes go into this session's own terminal, as if typed: the helper's controlling tty is the session's. */
@@ -224,6 +233,7 @@ async function stop($: EngineInterface, send = false): Promise<void> {
     if (text !== t.before && text.trim()) {
       steady = text === last ? steady + 1 : 0
       if (steady >= 3) {
+        B.sentAt = await $.clock.now()
         await type($, '0d')
         return
       }
@@ -231,7 +241,17 @@ async function stop($: EngineInterface, send = false): Promise<void> {
     last = text
   }
   // Nothing new was heard: what was in the box goes as it is.
-  if ((await $.prompt.read()).text.trim()) await type($, '0d')
+  if ((await $.prompt.read()).text.trim()) await enter($)
+}
+
+/**
+ * A note for Claude with a prompt the buds just sent: dictated, and it may be meant for another session ("awaazpro2,
+ * what's up"); Claude forwards it with SendMessage then, and that session answers and so takes the taps.
+ */
+export async function budsNote($: EngineInterface): Promise<string | undefined> {
+  if (!B.sentAt || (await $.clock.now()) - B.sentAt > 5000) return undefined
+  B.sentAt = 0
+  return 'This message was dictated through the earbuds (think-aloud), so names may be misheard. If it starts by addressing another Claude Code session by name (e.g. "awaazpro2, ..."), forward the rest to that session with SendMessage (ListAgents for names; spelling may be off) and do nothing else here.'
 }
 
 /** The person sent or pressed Esc from the keyboard while listening: the held Space goes, nothing more is sent. */

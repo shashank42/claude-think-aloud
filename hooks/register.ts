@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import { boardText, defaultCast, mergeCast, ROLES, roleOf, StepReader, Team, TEAM, trimBacklog, WORKERS, type Line, type Role, type TeamSettings, type Utterance } from './cast'
-import { budsCancel, budsNow, budsSetup, budsStart, budsStop, budsTarget, mics, setBudsMic, type BudsHooks, type Mic } from './buds'
+import { budsCancel, budsNote, budsNow, budsSetup, budsStart, budsStop, budsTarget, mics, setBudsMic, type BudsHooks, type Mic } from './buds'
 import { fallbackNarration, gistOf, narrationOf, narratorPrompt, spoken, synthOf, synthPrompt } from './speech'
 
 /**
@@ -892,6 +892,9 @@ export const register: Register = on => {
       // Sent from the keyboard while the buds listen: they stop (the buds' own send has stopped them already).
       void budsCancel($).catch(() => undefined)
       if (!e.turnId) trimBacklog(S.team.queue, 0, 0)
+      // Sent by the buds: Claude is told it was dictated, and to forward it if it names another session.
+      const note = await budsNote($)
+      if (note) return next({ ...e, context: [...(e.context ?? []), note] })
     } catch {
       // nothing to do
     }

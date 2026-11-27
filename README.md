@@ -146,6 +146,8 @@ OPPO, OnePlus and realme buds (tested on OnePlus Nord Buds 3) work as a remote, 
 | Double tap, left | Play/pause for videos and music |
 
 - **Which session.** The one that spoke last, or that you typed to last. Every open session listens, and that one acts.
+  To reach another, start with its name ("awaazpro2, what's up"): Claude forwards it there, and that session answers
+  and takes the taps from then on.
 - **Dictation mode.** It follows your `/voice` setting. In `hold` mode the mod holds Space down while it listens; in
   `tap` mode it taps Space (that mode starts only in an empty prompt box, so adding more needs `hold`).
 - **Speech pauses** while it listens and carries on from the same word after (Kokoro; the Mac voice stops instead).
