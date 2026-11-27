@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import { boardText, defaultCast, mergeCast, ROLES, roleOf, StepReader, Team, TEAM, trimBacklog, WORKERS, type Line, type Role, type TeamSettings, type Utterance } from './cast'
 import { budsCancel, budsNote, budsNow, budsSetup, budsStart, budsStop, budsTarget, mics, setBudsMic, type BudsHooks, type Mic } from './buds'
+import { floorFree, floorHush, floorInit, floorPlaying, floorTake } from './floor'
 import { fallbackNarration, gistOf, narrationOf, narratorPrompt, spoken, synthOf, synthPrompt } from './speech'
 
 /**
@@ -243,6 +244,7 @@ function silence($: EngineInterface): void {
 /** Everything said or waiting goes: the queue, the narrator's and the director's calls, `say`, Kokoro's playback. */
 function hush($: EngineInterface): void {
   void budsCancel($).catch(() => undefined)
+  void floorFree($).catch(() => undefined)
   silence($)
   S.team.hush()
   S.preparing = null
@@ -280,11 +282,15 @@ function back($: EngineInterface): string | undefined {
 function pause($: EngineInterface): void {
   if (S.settings.engine !== 'kokoro') return hush($)
   S.paused = true
+  // Nobody else speaks either while the person talks.
+  void floorHush($).catch(() => undefined)
   if (S.kokoro.port !== null) void $.http.fetch(`http://127.0.0.1:${S.kokoro.port}/pause`, { method: 'POST' }).catch(() => undefined)
 }
 
 function resume($: EngineInterface): void {
   S.paused = false
+  // What was held carries on: the floor stays for a moment, and its next line takes it again.
+  void floorPlaying($, 3000).catch(() => undefined)
   if (S.kokoro.port !== null) void $.http.fetch(`http://127.0.0.1:${S.kokoro.port}/resume`, { method: 'POST' }).catch(() => undefined)
 }
 
@@ -509,6 +515,10 @@ async function work($: EngineInterface): Promise<void> {
       }
       const source = narrated ? '' : u.text
       u.text = u.intro ? `${u.intro} ${said}` : said
+      // One voice at a time across sessions; the voice that has just come over from another says whose it is.
+      const whose = await floorTake($, () => mine !== S.epoch)
+      if (mine !== S.epoch) break
+      if (whose) u.text = `${whose} ${u.text}`
       const rate = Math.round(u.kind === 'reply' ? S.settings.rate : S.settings.rate * THINKING_FASTER)
       playing = 0
       if (kokoro) {
@@ -520,6 +530,7 @@ async function work($: EngineInterface): Promise<void> {
           S.kokoro.misses = 0
           shown($, u, source)
           playing = playMs(u.text, rate)
+          void floorPlaying($, playing).catch(() => undefined)
         } else if (r === 'failed' && mine === S.epoch && ++S.kokoro.misses >= KOKORO_MISSES_MAX) {
           stopKokoro('failed', 'the voice server stopped playing')
         }
@@ -527,12 +538,15 @@ async function work($: EngineInterface): Promise<void> {
       }
       shown($, u, source)
       await sayLine($, u, rate, mine)
+      void floorPlaying($, 0).catch(() => undefined)
     }
   } catch {
     // Nothing here may reach the engine; what is left waits for the next line queued (no retry loop).
     failed = true
   } finally {
     S.running = false
+    // Nothing is playing out: the floor is free at once (else it stays until the last line has played).
+    if (playing === 0) void floorFree($).catch(() => undefined)
     try {
       if (mine === S.epoch && playing > 0 && !failed) S.statusTimer = $.clock.after(playing, () => S.running || idle($))
       else if (mine === S.epoch) idle($)
@@ -794,6 +808,7 @@ export const register: Register = on => {
         void loadVoices($)
         if (S.settings.engine === 'kokoro') void startKokoro($)
       }
+      if (S.interactive) void floorInit($).catch(() => undefined)
       if (S.interactive && S.settings.buds) void budsStart($, budsHooks($))
     } catch {
       // the defaults stand
