@@ -13,8 +13,9 @@ import type { EngineInterface } from 'claude-code'
  * Talking presses Space in this session's own terminal (the helper types into its controlling tty), so it is Claude
  * Code's dictation in whichever mode settings.json has: "hold" (a Space held down while it listens, then
  * Enter to send) or "tap" (Space, Space). While it records, the mic chosen with /speak mic is the input ("default": whatever
- * macOS has). A Bluetooth mic puts the buds in call mode, where a tap calls Siri instead of reporting. What is
- * being said pauses while it listens and carries on after.
+ * macOS has, unless that is Bluetooth). A Bluetooth mic puts the buds in call mode, where they report no taps at all
+ * (seen 27 Nov 2026: stuck listening), so a Bluetooth default gives way to a wired mic. What is being said pauses
+ * while it listens and carries on after. Sending or Esc from the keyboard stops it listening too.
  */
 
 export type BudsHooks = {
@@ -172,13 +173,18 @@ async function listen($: EngineInterface, hooks: BudsHooks): Promise<void> {
   hooks.pause()
   // The mic chosen with /speak mic while it records; the default input comes back after.
   let restore: string | null = null
-  if (budsMic !== 'default') {
-    const all = await mics($)
-    const want = all.find(m => m.name === budsMic)
-    const now = all.find(m => m.isDefault)
-    if (!want) $.ui.toast(`${budsMic} is not connected: recording from the default mic.`)
-    else if (want !== now && (await sh($, `exec ${HELPER} mic "$1"`, [want.id])).exitCode === 0) restore = now?.id ?? null
+  const all = await mics($)
+  const now = all.find(m => m.isDefault)
+  let want = budsMic === 'default' ? now : all.find(m => m.name === budsMic)
+  if (!want && budsMic !== 'default') $.ui.toast(`${budsMic} is not connected: recording from the default mic.`)
+  want ??= now
+  // A Bluetooth mic stops the buds' taps while it records: a wired one instead, if there is one.
+  if (want?.kind === 'bluetooth') {
+    const wired = ['usb', 'builtin', 'continuity', 'other'].map(k => all.find(m => m.kind === k)).find(m => m !== undefined)
+    if (wired) want = wired
+    else $.ui.toast("Only a Bluetooth mic: the buds' taps stop while it records. Stop and send from the keyboard.")
   }
+  if (want && want !== now && (await sh($, `exec ${HELPER} mic "$1"`, [want.id])).exitCode === 0) restore = now?.id ?? null
   chime($, 'Tink')
   let holder: AsyncGenerator<unknown, unknown> | null = null
   if (mode === 'hold') {
@@ -191,7 +197,7 @@ async function listen($: EngineInterface, hooks: BudsHooks): Promise<void> {
   } else await type($, '20')
   const timer = $.clock.after(TALK_MAX_MS, () => void stop($))
   B.talking = { holder, mic: restore, before: box.text, mode, timer, hooks }
-  $.ui.toast('🎙 Listening: tap left to stop, right to send')
+  $.ui.toast(`🎙 Listening${want ? ` (${want.name})` : ''}: tap left to stop, right to send`)
 }
 
 /** Listening stops; what is being said carries on. With `send`, the prompt box goes once its new words are in it. */
@@ -226,6 +232,11 @@ async function stop($: EngineInterface, send = false): Promise<void> {
   }
   // Nothing new was heard: what was in the box goes as it is.
   if ((await $.prompt.read()).text.trim()) await type($, '0d')
+}
+
+/** The person sent or pressed Esc from the keyboard while listening: the held Space goes, nothing more is sent. */
+export async function budsCancel($: EngineInterface): Promise<void> {
+  if (B.talking) await stop($)
 }
 
 export type Mic = { id: string; isDefault: boolean; kind: string; name: string }

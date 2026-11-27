@@ -150,8 +150,9 @@ OPPO, OnePlus and realme buds (tested on OnePlus Nord Buds 3) work as a remote, 
   `tap` mode it taps Space (that mode starts only in an empty prompt box, so adding more needs `hold`).
 - **Speech pauses** while it listens and carries on from the same word after (Kokoro; the Mac voice stops instead).
 - **Microphone.** `/speak mic` lists Default (macOS's input) and every mic connected; `/speak mic 2` picks one, used
-  only while you talk. A Bluetooth mic, the buds' own included, puts the buds in call mode, where a tap calls Siri
-  instead of reporting: then send from the keyboard.
+  only while you talk. A Bluetooth mic, the buds' own included, is never used: it puts the buds in call mode, where
+  they report no taps, so a USB mic (or the Mac's own, lid open) records instead. Sending or Esc from the keyboard
+  also stops the listening.
 - **Media.** The buds send the Mac's player a "play" with every gesture. After a tap or triple tap the mod pauses the
   player again, so a video never starts by itself, and talking pauses it.
 - **Setup.** `/speak buds setup` writes the gesture map onto the buds. The helper `buds/buds.swift` builds on first use

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import { boardText, defaultCast, mergeCast, ROLES, roleOf, StepReader, Team, TEAM, trimBacklog, WORKERS, type Line, type Role, type TeamSettings, type Utterance } from './cast'
-import { budsNow, budsSetup, budsStart, budsStop, budsTarget, mics, setBudsMic, type BudsHooks, type Mic } from './buds'
+import { budsCancel, budsNow, budsSetup, budsStart, budsStop, budsTarget, mics, setBudsMic, type BudsHooks, type Mic } from './buds'
 import { fallbackNarration, gistOf, narrationOf, narratorPrompt, spoken, synthOf, synthPrompt } from './speech'
 
 /**
@@ -242,6 +242,7 @@ function silence($: EngineInterface): void {
 
 /** Everything said or waiting goes: the queue, the narrator's and the director's calls, `say`, Kokoro's playback. */
 function hush($: EngineInterface): void {
+  void budsCancel($).catch(() => undefined)
   silence($)
   S.team.hush()
   S.preparing = null
@@ -727,12 +728,12 @@ async function setVoice($: EngineInterface, role: Role, voice: string): Promise<
 /** /speak mic: Default and each input, numbered, the chosen one ticked. */
 function micList(all: Mic[]): string {
   const why: Record<string, string> = {
-    bluetooth: ' (Bluetooth: the buds go into call mode while it records, and a send tap calls Siri; send from the keyboard)',
+    bluetooth: " (Bluetooth: never used while listening, the buds' taps would stop; a wired mic records instead)",
     'builtin-off': ' (lid closed: hears nothing)',
   }
   const now = all.find(m => m.isDefault)?.name ?? 'none'
   const tick = (on: boolean) => (on ? '✓' : ' ')
-  const rows = [`${tick(S.settings.budsMic === 'default')} 0. Default (macOS's input, now ${now})`]
+  const rows = [`${tick(S.settings.budsMic === 'default')} 0. Default (macOS's input, now ${now}; a Bluetooth one gives way to a wired mic)`]
   all.forEach((m, i) => rows.push(`${tick(S.settings.budsMic === m.name)} ${i + 1}. ${m.name}${why[m.kind] ?? ''}`))
   return `The mic that records while you talk by the buds (the input switches back after):\n${rows.join('\n')}\n/speak mic <number or name> chooses.`
 }
@@ -888,6 +889,8 @@ export const register: Register = on => {
   // stops it all (turn.complete, aborted).
   on('prompt.submit', async ($, e, next) => {
     try {
+      // Sent from the keyboard while the buds listen: they stop (the buds' own send has stopped them already).
+      void budsCancel($).catch(() => undefined)
       if (!e.turnId) trimBacklog(S.team.queue, 0, 0)
     } catch {
       // nothing to do
